@@ -1,5 +1,13 @@
 # VMflow NuttX
 
+[![build](https://img.shields.io/github/actions/workflow/status/nodestark/vmflow-nuttx/build.yml?branch=main&label=build)](https://github.com/nodestark/vmflow-nuttx/actions/workflows/build.yml)
+[![NuttX](https://img.shields.io/badge/NuttX-13.1.0-blue)](https://github.com/apache/nuttx/releases/tag/nuttx-13.1.0)
+[![chip](https://img.shields.io/badge/chip-ESP32--S3-red)](https://www.espressif.com/en/products/socs/esp32-s3)
+[![modem](https://img.shields.io/badge/modem-SIM7080G%20LTE--M%2FNB--IoT-orange)](#sim7080g-lte-m--nb-iot)
+[![docker](https://img.shields.io/badge/toolchain-Docker-2496ED?logo=docker&logoColor=white)](docker/Dockerfile)
+[![license](https://img.shields.io/github/license/nodestark/vmflow-nuttx)](LICENSE)
+[![last commit](https://img.shields.io/github/last-commit/nodestark/vmflow-nuttx)](https://github.com/nodestark/vmflow-nuttx/commits/main)
+
 NuttX port of the [VMflow](https://github.com/nodestark/mdb-esp32-cashless) MDB cashless
 firmware for the ESP32-S3.
 
@@ -7,6 +15,14 @@ firmware for the ESP32-S3.
 > (USB-Serial/JTAG). The SIM7080G comes up as a regular network interface (`ppp0`) through
 > pppd, so sockets, DNS and HTTP go over LTE-M/NB-IoT. The `vmflow` application is still a
 > skeleton: MDB, Wi-Fi, MQTT RPC, BLE and OTA from the ESP-IDF firmware are not ported yet.
+> The WS2812 status LED works through the `rgbled` command.
+
+Related projects:
+
+- [mdb-esp32-cashless](https://github.com/nodestark/mdb-esp32-cashless): the ESP-IDF
+  firmware this port follows, with the hardware (KiCad), backend and Android app.
+- [vmflow-cli](https://github.com/nodestark/vmflow-cli): command line for the VMflow fleet
+  (auth, device RPC over MQTT, sales, telemetry).
 
 ## Layout
 
@@ -69,6 +85,9 @@ build: 2b5c0de5 Oct 23 2026 13:11:50
 nsh> uname -a
 NuttX 13.1.0 2b5c0de5 Oct 23 2026 13:11:50 xtensa esp32s3-devkit
 ```
+
+If the console stays silent after `make flash`, the chip did not leave download mode on
+the final reset; replug the board or press RESET.
 
 Flashing and the console share the chip's native USB port (GPIO19/20), which shows up as
 `303a:1001` Espressif USB JTAG/serial in both download mode and while NuttX runs.
