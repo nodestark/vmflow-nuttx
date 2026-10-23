@@ -28,12 +28,19 @@ firmware for the ESP32-S3.
 Requires Docker. Everything else lives in the image.
 
 ```bash
-git clone --recurse-submodules <repo-url> vmflow-nuttx
+git clone --recurse-submodules --shallow-submodules https://github.com/nodestark/vmflow-nuttx
 cd vmflow-nuttx
 
 make image       # toolchain image (once)
 make configure   # apply firmware/configs/vmflow
 make build       # -> nuttx/nuttx.bin
+```
+
+`--shallow-submodules` fetches only the pinned NuttX snapshot (~150 MB) instead of the full
+history. For a clone made without it:
+
+```bash
+git submodule update --init --depth 1
 ```
 
 The first build clones Espressif's `esp-hal-3rdparty` into the NuttX tree, so it needs
@@ -82,6 +89,22 @@ VM, pass both USB IDs through.
 make menuconfig      # edit nuttx/.config
 make savedefconfig   # store it back into firmware/configs/vmflow/defconfig
 ```
+
+## Updating NuttX
+
+`nuttx` and `apps` are pinned to the same release tag. To move both to a new release:
+
+```bash
+for m in nuttx apps; do
+  git -C $m fetch --depth 1 origin tag nuttx-X.Y.Z
+  git -C $m checkout nuttx-X.Y.Z
+done
+make configure build      # rebuild and test on the board
+git add nuttx apps && git commit -m "build: bump NuttX to X.Y.Z"
+```
+
+Update the toolchain/esptool versions in `docker/Dockerfile` if the new release's
+`tools/ci/docker/linux/Dockerfile` changed them.
 
 ## License
 
