@@ -211,7 +211,7 @@ client  : pid 7, device 123
 broker  : mqtt.vmflow.xyz:1883, keepalive 120 s
 state   : connected for 56 s
 sessions: 1, failed attempts: 1
-messages: rx 5, tx 6
+messages: rx 5, tx 6, late acks 0
 nsh> vmflow mqtt pub domain.vmflow.xyz/123/test hello 1
 ```
 
@@ -226,6 +226,11 @@ With a subdomain set, `CONFIG_VMFLOW_MQTT_AUTOSTART` (default on) adds the clien
 `init.rc` next to the modem service. Incoming messages are only logged to syslog until the
 RPC handler (`<cmd>:<params>:<ts>:<hmac>`) is ported. The broker ACL only lets anonymous
 clients use `+/rpc`, `+/credit` and `domain.vmflow.xyz/#`.
+
+LTE-M has stalls of several seconds (and occasionally tens). MQTT-C resends any request still
+unacknowledged after 30 s, so both acks may come back; the second one matches nothing and MQTT-C
+reports `MQTT_ERROR_ACK_OF_UNKNOWN`, which would end the session. The client drops that error and
+counts it as `late acks`.
 
 Settings live under **Application Configuration → VMflow** (`make menuconfig`): broker host and
 port, keepalive, reconnect interval and buffer sizes. The send buffer (6 KB) holds every message

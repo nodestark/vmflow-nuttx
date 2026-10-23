@@ -60,6 +60,7 @@ struct vmflow_mqtt_state_s
   unsigned int failures;
   unsigned int rx;
   unsigned int tx;
+  unsigned int late_acks;
   enum MQTTErrors last_error;
 };
 
@@ -234,6 +235,20 @@ static void session_run(void)
     {
       pthread_mutex_lock(&g_lock);
       err = mqtt_sync(&g_client);
+
+      /* MQTT-C resends a request whose ack is late by more than
+       * response_timeout (30 s), which LTE-M stalls exceed. Both acks then
+       * arrive and the second matches nothing. MQTT-C has consumed it, but
+       * the error sticks and would end the session: drop it instead.
+       */
+
+      if (err == MQTT_ERROR_ACK_OF_UNKNOWN)
+        {
+          g_client.error = MQTT_OK;
+          g_mqtt.late_acks++;
+          err = MQTT_OK;
+        }
+
       pthread_mutex_unlock(&g_lock);
 
       if (err != MQTT_OK)
@@ -375,7 +390,8 @@ void vmflow_mqtt_status(void)
          (long long)(uptime() - g_mqtt.since));
   printf("sessions: %u, failed attempts: %u\n",
          g_mqtt.connects, g_mqtt.failures);
-  printf("messages: rx %u, tx %u\n", g_mqtt.rx, g_mqtt.tx);
+  printf("messages: rx %u, tx %u, late acks %u\n", g_mqtt.rx, g_mqtt.tx,
+         g_mqtt.late_acks);
 
   if (g_mqtt.last_error < 0)
     {
