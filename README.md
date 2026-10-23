@@ -4,7 +4,7 @@ NuttX port of the [VMflow](https://github.com/nodestark/mdb-esp32-cashless) MDB 
 firmware for the ESP32-S3.
 
 > **Status** — bring-up. The image boots NuttX with an NSH console on the chip's native
-> USB-OTG port (CDC-ACM) and ships the `vmflow` application skeleton. MDB, Wi-Fi/LTE uplink,
+> USB port (USB-Serial/JTAG) and ships the `vmflow` application skeleton. MDB, Wi-Fi/LTE uplink,
 > MQTT RPC, BLE and OTA from the ESP-IDF firmware are not ported yet.
 
 ## Layout
@@ -16,7 +16,9 @@ firmware for the ESP32-S3.
 ├── firmware/
 │   ├── apps/                 VMflow applications, linked as apps/external
 │   │   └── vmflow/           cashless application (`vmflow` NSH command)
-│   └── configs/vmflow/       board configuration (defconfig on top of esp32s3-devkit)
+│   └── configs/
+│       ├── vmflow/           default: NSH on USB-Serial/JTAG (on top of esp32s3-devkit)
+│       └── vmflow-otg/       alternative: NSH on USB-OTG CDC-ACM
 ├── docker/Dockerfile         build environment (xtensa-esp-elf 14.2.0, esptool 5.2.0, kconfig)
 └── Makefile                  build, flash and monitor through Docker
 ```
@@ -45,24 +47,34 @@ your certificates live in another directory.
 
 ```bash
 make flash               # PORT=/dev/ttyACM0 by default
-make monitor             # NSH on the USB-OTG CDC-ACM port
+make monitor             # NSH console, exit with Ctrl+]
 ```
 
 ```
 nsh> vmflow
-VMflow on NuttX 13.1.0 (esp32s3-devkit)
+VMflow on NuttX 13.1.0 (xtensa)
+build: 2b5c0de5 Oct 23 2026 13:11:50
+nsh> uname -a
+NuttX 13.1.0 2b5c0de5 Oct 23 2026 13:11:50 xtensa esp32s3-devkit
 ```
 
-The console runs on the USB-OTG peripheral (GPIO19/20), which shares the PHY with the
-USB-Serial/JTAG controller used for flashing:
+Flashing and the console share the chip's native USB port (GPIO19/20), which shows up as
+`303a:1001` Espressif USB JTAG/serial in both download mode and while NuttX runs.
 
-| State | USB ID | Role |
-|-------|--------|------|
-| Download mode / ROM | `303a:1001` Espressif USB JTAG/serial | flashing with esptool |
-| NuttX running | `0525:a4a7` NuttX CDC/ACM | NSH console |
+On the USB-Serial/JTAG, DTR and RTS drive the chip's BOOT and RESET lines. `make monitor`
+keeps both low; a terminal that asserts them on open holds the chip in reset or drops it
+into download mode.
 
-Once NuttX is running, esptool can no longer reset the chip over USB. To flash again,
-hold **BOOT**, tap **RESET** (or replug), release **BOOT**, then run `make flash`.
+### USB-OTG console (`vmflow-otg`)
+
+```bash
+make configure build flash CONFIG=vmflow-otg
+```
+
+The console moves to the USB-OTG peripheral as a CDC-ACM device (`0525:a4a7` NuttX
+CDC/ACM, marked experimental in NuttX). The port changes identity when NuttX starts, so
+esptool can no longer reach the chip: to flash again, hold **BOOT** while plugging in. On a
+VM, pass both USB IDs through.
 
 ## Configuration
 

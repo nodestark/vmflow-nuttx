@@ -1,0 +1,7 @@
+############################################################################
+# firmware/configs/vmflow/Make.defs
+#
+# Out-of-tree configuration on top of the in-tree esp32s3-devkit board.
+############################################################################
+
+include $(TOPDIR)/boards/xtensa/esp32s3/esp32s3-devkit/scripts/Make.defs
