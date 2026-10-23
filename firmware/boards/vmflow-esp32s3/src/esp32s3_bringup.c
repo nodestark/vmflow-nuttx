@@ -42,6 +42,10 @@
 #  include "esp32s3_board_wlan.h"
 #endif
 
+#ifdef CONFIG_ESP_RMT
+#  include "esp32s3_board_rmt.h"
+#endif
+
 #include "vmflow-esp32s3.h"
 
 /****************************************************************************
@@ -138,6 +142,16 @@ int esp32s3_bringup(void)
   if (ret < 0)
     {
       syslog(LOG_ERR, "ERROR: Failed to initialize GPIO driver: %d\n", ret);
+    }
+#endif
+
+#ifdef CONFIG_ESP_RMT
+  /* RGB LED: RMT TX channel + WS2812 driver at /dev/leds0 */
+
+  ret = board_rmt_txinitialize(CONFIG_VMFLOW_RGBLED_GPIO);
+  if (ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: board_rmt_txinitialize() failed: %d\n", ret);
     }
 #endif
 

@@ -17,9 +17,10 @@ firmware for the ESP32-S3.
 ├── firmware/
 │   ├── apps/                 VMflow applications, linked as apps/external
 │   │   ├── vmflow/           cashless application (`vmflow` NSH command)
-│   │   └── sim7080g/         modem daemon: power, pppd, link supervision
+│   │   ├── sim7080g/         modem daemon: power, pppd, link supervision
+│   │   └── rgbled/           `rgbled` command for the WS2812 status LED
 │   └── boards/vmflow-esp32s3/
-│       ├── src/              board code (derived from esp32s3-devkit), PWRKEY GPIO
+│       ├── src/              board code (derived from esp32s3-devkit), PWRKEY GPIO, RGB LED
 │       └── configs/
 │           ├── vmflow/       default: NSH on USB-Serial/JTAG, SIM7080G + PPP
 │           └── vmflow-otg/   alternative: NSH on USB-OTG CDC-ACM
@@ -156,6 +157,26 @@ Notes:
 - `kill` cannot stop the daemon: without `CONFIG_SIG_DEFAULT` NuttX ignores signals that
   have no handler.
 - No CMUX: while PPP is up the modem takes no AT commands, same as the ESP-IDF firmware.
+
+## RGB LED
+
+The board's addressable RGB LED (WS2812) sits on GPIO21. The bringup puts an RMT TX channel
+on it and registers NuttX's WS2812 driver as `/dev/leds0`; the `rgbled` command drives it.
+
+```
+nsh> rgbled red              # solid color
+nsh> rgbled 00ff00 20        # RRGGBB or #RRGGBB, 20 % brightness
+nsh> rgbled blink blue 400 3 # 400 ms period, 3 blinks
+nsh> rgbled rainbow 5 50     # color wheel for 5 s at 50 %
+nsh> rgbled off
+```
+
+Colors by name: `off red green blue yellow cyan magenta white orange purple`. The LED holds
+the last color written. Applications can write it directly: open `/dev/leds0` and write one
+`uint32_t` per LED as `0x00RRGGBB` (the driver reorders it to GRB on the wire).
+
+The pin is a board option (`VMFLOW_RGBLED_GPIO`); the command lives under
+**Application Configuration → VMflow → RGB LED (WS2812)**.
 
 ## Configuration
 

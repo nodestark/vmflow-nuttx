@@ -1,0 +1,7 @@
+############################################################################
+# firmware/apps/rgbled/Make.defs
+############################################################################
+
+ifneq ($(CONFIG_VMFLOW_RGBLED),)
+CONFIGURED_APPS += $(APPDIR)/external/rgbled
+endif

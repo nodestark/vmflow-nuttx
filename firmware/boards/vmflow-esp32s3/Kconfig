@@ -13,4 +13,12 @@ config VMFLOW_SIM7080G_PWRKEY_GPIO
 		GPIO driving the SIM7080G PWRKEY through an inverting transistor
 		(high = key pressed). Exposed as /dev/sim7080g_pwrkey.
 
+config VMFLOW_RGBLED_GPIO
+	int "RGB LED (WS2812) GPIO"
+	default 21
+	depends on ESP_RMT
+	---help---
+		Data pin of the addressable RGB LED, driven by an RMT TX channel.
+		Exposed as /dev/leds0 when WS2812_NON_SPI_DRIVER is enabled.
+
 endif # ARCH_BOARD_CUSTOM
