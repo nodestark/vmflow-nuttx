@@ -1,0 +1,26 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config VMFLOW
+	tristate "VMflow cashless application"
+	default n
+	---help---
+		Enable the VMflow MDB cashless application.
+
+if VMFLOW
+
+config VMFLOW_PROGNAME
+	string "Program name"
+	default "vmflow"
+
+config VMFLOW_PRIORITY
+	int "VMflow task priority"
+	default 100
+
+config VMFLOW_STACKSIZE
+	int "VMflow stack size"
+	default 4096
+
+endif

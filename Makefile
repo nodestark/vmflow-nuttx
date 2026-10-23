@@ -1,0 +1,61 @@
+# VMflow NuttX firmware — build, flash and monitor inside Docker.
+#
+#   make image       build the Docker toolchain image
+#   make configure   apply firmware/configs/$(CONFIG)
+#   make build       compile nuttx/nuttx.bin
+#   make flash       write the image to $(PORT)
+#   make monitor     open the NSH console on $(PORT)
+#   make menuconfig  edit the config; `make savedefconfig` stores it back
+
+IMAGE  ?= vmflow-nuttx-builder
+CONFIG ?= vmflow
+PORT   ?= /dev/ttyACM0
+BAUD   ?= 115200
+JOBS   ?= $(shell nproc)
+
+# Host CA store, forwarded into the image so builds work behind TLS-inspecting proxies.
+EXTRA_CA_DIR ?= $(or $(wildcard /usr/local/share/ca-certificates),docker/ca)
+
+TTY        := $(shell [ -t 0 ] && echo -it)
+DOCKER_RUN := docker run --rm $(TTY) \
+	--user $(shell id -u):$(shell id -g) -e HOME=/tmp \
+	-v $(CURDIR):/work -w /work/nuttx
+DEVICE     = --device $(PORT) --group-add $(shell stat -c %g $(PORT) 2>/dev/null || echo dialout)
+
+.PHONY: all image configure build flash monitor menuconfig savedefconfig distclean shell
+
+all: build
+
+image:
+	docker build --build-context extra-ca=$(EXTRA_CA_DIR) -t $(IMAGE) docker
+
+apps/external:
+	ln -sfn ../firmware/apps apps/external
+
+configure: apps/external
+	$(DOCKER_RUN) $(IMAGE) ./tools/configure.sh -E -l ../firmware/configs/$(CONFIG)
+
+nuttx/.config:
+	$(MAKE) configure
+
+build: apps/external nuttx/.config
+	$(DOCKER_RUN) $(IMAGE) make -j$(JOBS)
+
+flash:
+	$(DOCKER_RUN) $(DEVICE) $(IMAGE) make flash ESPTOOL_PORT=$(PORT)
+
+monitor:
+	$(DOCKER_RUN) $(DEVICE) $(IMAGE) python3 -m serial.tools.miniterm --raw $(PORT) $(BAUD)
+
+menuconfig: nuttx/.config
+	$(DOCKER_RUN) $(IMAGE) make menuconfig
+
+savedefconfig: nuttx/.config
+	$(DOCKER_RUN) $(IMAGE) make savedefconfig
+	cp nuttx/defconfig firmware/configs/$(CONFIG)/defconfig
+
+distclean:
+	$(DOCKER_RUN) $(IMAGE) make distclean
+
+shell:
+	$(DOCKER_RUN) $(IMAGE) bash

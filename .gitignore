@@ -1,0 +1,14 @@
+# Editors
+.idea/
+.vscode/
+
+# Local scratch
+.temp
+
+# NuttX build products inside firmware/apps (built through apps/external)
+firmware/apps/Kconfig
+**/.kconfig
+**/.built
+**/.depend
+**/Make.dep
+*.o

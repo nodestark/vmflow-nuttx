@@ -1,0 +1,10 @@
+[submodule "nuttx"]
+	path = nuttx
+	url = https://github.com/apache/nuttx.git
+	shallow = true
+	ignore = dirty
+[submodule "apps"]
+	path = apps
+	url = https://github.com/apache/nuttx-apps.git
+	shallow = true
+	ignore = dirty
