@@ -1,0 +1,16 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+if ARCH_BOARD_CUSTOM
+
+config VMFLOW_SIM7080G_PWRKEY_GPIO
+	int "SIM7080G PWRKEY GPIO"
+	default 14
+	depends on DEV_GPIO
+	---help---
+		GPIO driving the SIM7080G PWRKEY through an inverting transistor
+		(high = key pressed). Exposed as /dev/sim7080g_pwrkey.
+
+endif # ARCH_BOARD_CUSTOM

@@ -1,13 +1,14 @@
 # VMflow NuttX firmware — build, flash and monitor inside Docker.
 #
 #   make image       build the Docker toolchain image
-#   make configure   apply firmware/configs/$(CONFIG)
+#   make configure   apply $(BOARD_DIR)/configs/$(CONFIG)
 #   make build       compile nuttx/nuttx.bin
 #   make flash       write the image to $(PORT)
 #   make monitor     open the NSH console on $(PORT)
 #   make menuconfig  edit the config; `make savedefconfig` stores it back
 
 IMAGE  ?= vmflow-nuttx-builder
+BOARD_DIR := firmware/boards/vmflow-esp32s3
 CONFIG ?= vmflow
 PORT   ?= /dev/ttyACM0
 BAUD   ?= 115200
@@ -33,7 +34,9 @@ apps/external:
 	ln -sfn ../firmware/apps apps/external
 
 configure: apps/external
-	$(DOCKER_RUN) $(IMAGE) ./tools/configure.sh -E -l ../firmware/configs/$(CONFIG)
+	@# A stale config whose Make.defs link points nowhere breaks `-E` (distclean)
+	@test -e nuttx/Make.defs || rm -f nuttx/.config nuttx/Make.defs
+	$(DOCKER_RUN) $(IMAGE) ./tools/configure.sh -E -l ../$(BOARD_DIR)/configs/$(CONFIG)
 
 nuttx/.config:
 	$(MAKE) configure
@@ -54,7 +57,7 @@ menuconfig: nuttx/.config
 
 savedefconfig: nuttx/.config
 	$(DOCKER_RUN) $(IMAGE) make savedefconfig
-	cp nuttx/defconfig firmware/configs/$(CONFIG)/defconfig
+	cp nuttx/defconfig $(BOARD_DIR)/configs/$(CONFIG)/defconfig
 
 distclean:
 	$(DOCKER_RUN) $(IMAGE) make distclean
