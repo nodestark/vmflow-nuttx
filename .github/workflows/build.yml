@@ -19,7 +19,7 @@ jobs:
       - name: Configure and build
         run: make configure build
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: vmflow-nuttx-esp32s3
           path: |
