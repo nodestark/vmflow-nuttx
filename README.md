@@ -36,7 +36,7 @@ make configure   # apply firmware/configs/vmflow
 make build       # -> nuttx/nuttx.bin
 ```
 
-`--shallow-submodules` fetches only the pinned NuttX snapshot (~150 MB) instead of the full
+`--shallow-submodules` fetches only the pinned NuttX snapshot (~300 MB of git data) instead of the full
 history. For a clone made without it:
 
 ```bash
