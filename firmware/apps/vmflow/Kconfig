@@ -23,4 +23,69 @@ config VMFLOW_STACKSIZE
 	int "VMflow stack size"
 	default 4096
 
+config VMFLOW_SUBDOMAIN
+	string "Device subdomain"
+	default ""
+	---help---
+		Numeric device id assigned by the backend (<subdomain>.vmflow.xyz).
+		The ESP-IDF firmware receives it over BLE and keeps it in NVS;
+		here it is a build option until provisioning is ported.
+
+config VMFLOW_MQTT
+	bool "MQTT uplink"
+	default y
+	depends on NET_TCP && NETDB_DNSCLIENT
+	select NETUTILS_MQTTC
+	---help---
+		MQTT client for the VMflow broker (MQTT-C). Subscribes to
+		<subdomain>.vmflow.xyz/# and keeps a retained online/offline
+		status (last will) on domain.vmflow.xyz/<subdomain>/status, like
+		the ESP-IDF firmware.
+
+if VMFLOW_MQTT
+
+config VMFLOW_MQTT_AUTOSTART
+	bool "Start at boot (nxinit service)"
+	default y
+	depends on SYSTEM_NXINIT && VMFLOW_SUBDOMAIN != ""
+	---help---
+		Run "vmflow mqtt" as an nxinit service from /etc/init.d/init.rc.
+		The client waits for the network on its own, so it can start
+		before ppp0 is up.
+
+config VMFLOW_MQTT_HOST
+	string "Broker host"
+	default "mqtt.vmflow.xyz"
+
+config VMFLOW_MQTT_PORT
+	int "Broker port"
+	default 1883
+
+config VMFLOW_MQTT_KEEPALIVE
+	int "Keepalive (s)"
+	default 120
+
+config VMFLOW_MQTT_RECONNECT
+	int "Seconds between connection attempts"
+	default 15
+
+config VMFLOW_MQTT_STACKSIZE
+	int "Client task stack size (vmflow mqtt start)"
+	default 4096
+
+config VMFLOW_MQTT_SENDBUF
+	int "Send buffer size"
+	default 6144
+	---help---
+		MQTT-C keeps every outgoing message here until it is
+		acknowledged. DEX audit dumps reach ~4 KB.
+
+config VMFLOW_MQTT_RECVBUF
+	int "Receive buffer size"
+	default 2048
+	---help---
+		Largest incoming message (topic + payload).
+
+endif # VMFLOW_MQTT
+
 endif

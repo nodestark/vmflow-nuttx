@@ -11,4 +11,8 @@ MODULE    = $(CONFIG_VMFLOW)
 
 MAINSRC = vmflow_main.c
 
+ifneq ($(CONFIG_VMFLOW_MQTT),)
+CSRCS += vmflow_mqtt.c
+endif
+
 include $(APPDIR)/Application.mk

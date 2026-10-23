@@ -87,6 +87,18 @@ config SIM7080G_LINK_TIMEOUT
 		this many seconds, the daemon pulses PWRKEY to power-cycle a stuck
 		modem.
 
+config SIM7080G_PPP_TX_OFFLINE
+	int "pppd: frames sent without reply before dropping the link"
+	default 30
+	range 0 250
+	---help---
+		Overrides AHDLC_TX_OFFLINE in apps/netutils/pppd (upstream: 5).
+		pppd counts frames sent since the last one received and
+		reconnects past this limit; it is pppd's only dead-peer check
+		(LCP echo replies are not tracked). 5 is hit by a short burst of
+		TCP segments over LTE-M, which dropped the link during MQTT
+		publishes. 0 disables the check.
+
 if NETUTILS_PPPD_PAP
 
 config SIM7080G_PAP_USERNAME

@@ -19,10 +19,18 @@ service sim7080g sim7080g
    restart_period 5000
 #endif
 
+#ifdef CONFIG_VMFLOW_MQTT_AUTOSTART
+service mqtt vmflow mqtt
+   restart_period 5000
+#endif
+
 on init
 #ifdef CONFIG_SYSTEM_NSH
    start console
 #endif
 #ifdef CONFIG_SIM7080G_AUTOSTART
    start sim7080g
+#endif
+#ifdef CONFIG_VMFLOW_MQTT_AUTOSTART
+   start mqtt
 #endif

@@ -9,9 +9,14 @@ endif
 # apps/netutils/pppd only asks the peer for DNS servers (IPCP options 129/131)
 # when these are defined. Every app Makefile includes this file, so scope the
 # flags to the pppd directory instead of patching the submodule.
+#
+# ppp_conf.h defines its constants unconditionally: include it first, then
+# ppp_tuning.h overrides them; the sources' own #include is then a no-op.
 
 ifneq ($(CONFIG_SIM7080G),)
 ifeq ($(notdir $(CURDIR)),pppd)
 CFLAGS += -DIPCP_GET_PRI_DNS -DIPCP_GET_SEC_DNS
+CFLAGS += -include $(APPDIR)/netutils/pppd/ppp_conf.h
+CFLAGS += -include $(APPDIR)/external/sim7080g/ppp_tuning.h
 endif
 endif

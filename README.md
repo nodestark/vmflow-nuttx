@@ -13,9 +13,10 @@ firmware for the ESP32-S3.
 
 > **Status** — bring-up. NuttX boots with an NSH console on the chip's native USB port
 > (USB-Serial/JTAG). The SIM7080G comes up as a regular network interface (`ppp0`) through
-> pppd, so sockets, DNS and HTTP go over LTE-M/NB-IoT. The `vmflow` application is still a
-> skeleton: MDB, Wi-Fi, MQTT RPC, BLE and OTA from the ESP-IDF firmware are not ported yet.
-> The WS2812 status LED works through the `rgbled` command.
+> pppd, so sockets, DNS and HTTP go over LTE-M/NB-IoT. The `vmflow` application keeps an MQTT
+> session with the VMflow broker (status, last will, subscription); MDB, Wi-Fi, the signed RPC
+> handler, BLE provisioning and OTA from the ESP-IDF firmware are not ported yet. The WS2812
+> status LED works through the `rgbled` command.
 
 Related projects:
 
@@ -32,7 +33,7 @@ Related projects:
 ├── apps/                     apache/nuttx-apps (submodule, nuttx-13.1.0)
 ├── firmware/
 │   ├── apps/                 VMflow applications, linked as apps/external
-│   │   ├── vmflow/           cashless application (`vmflow` NSH command)
+│   │   ├── vmflow/           cashless application (`vmflow` NSH command), MQTT client
 │   │   ├── sim7080g/         modem daemon: power, pppd, link supervision
 │   │   └── rgbled/           `rgbled` command for the WS2812 status LED
 │   └── boards/vmflow-esp32s3/
@@ -176,6 +177,59 @@ Notes:
 - `kill` cannot stop the daemon: without `CONFIG_SIG_DEFAULT` NuttX ignores signals that
   have no handler.
 - No CMUX: while PPP is up the modem takes no AT commands, same as the ESP-IDF firmware.
+- pppd drops the link after sending `AHDLC_TX_OFFLINE` frames with nothing received. Upstream
+  uses 5, which a few back-to-back TCP segments hit within one LTE-M round trip;
+  `CONFIG_SIM7080G_PPP_TX_OFFLINE` (30) overrides it through `ppp_tuning.h`, force-included
+  into the pppd build.
+- TCP write buffers are on (`NET_TCP_WRITE_BUFFERS`, 64 IOBs). Without them every segment
+  waits for its ACK and a non-blocking `send()` returns `EAGAIN`, which MQTT-C spins on.
+
+## MQTT
+
+`vmflow mqtt` is the MQTT client ([MQTT-C](https://github.com/LiamBindle/MQTT-C), plain TCP),
+set up like the esp-mqtt client of the ESP-IDF firmware:
+
+| | |
+|-|-|
+| broker | `mqtt.vmflow.xyz:1883`, anonymous, keepalive 120 s, clean session |
+| client id | `vmflow-<subdomain>` |
+| last will | `offline`, QoS 1, retained, on `domain.vmflow.xyz/<subdomain>/status` |
+| on connect | publishes `online` (QoS 1, retained) there and subscribes `<subdomain>.vmflow.xyz/#` |
+| reconnect | every 15 s; DNS or connect fail while `ppp0` is down, so it just waits for the link |
+
+The device id (`<subdomain>`) is a build option for now: the ESP-IDF firmware gets it over BLE
+and keeps it in NVS. With it empty (the default) the client does not start.
+
+```bash
+make menuconfig    # Application Configuration → VMflow → Device subdomain
+make build flash
+```
+
+```
+nsh> vmflow mqtt status
+client  : pid 7, device 123
+broker  : mqtt.vmflow.xyz:1883, keepalive 120 s
+state   : connected for 56 s
+sessions: 1, failed attempts: 1
+messages: rx 5, tx 6
+nsh> vmflow mqtt pub domain.vmflow.xyz/123/test hello 1
+```
+
+| Command | Use |
+|---------|-----|
+| `vmflow mqtt` | run the client in the foreground (what init does) |
+| `vmflow mqtt start` | spawn it in the background, when autostart is off |
+| `vmflow mqtt status` | session state and counters |
+| `vmflow mqtt pub <topic> <msg> [qos] [retain]` | publish through the running session |
+
+With a subdomain set, `CONFIG_VMFLOW_MQTT_AUTOSTART` (default on) adds the client to
+`init.rc` next to the modem service. Incoming messages are only logged to syslog until the
+RPC handler (`<cmd>:<params>:<ts>:<hmac>`) is ported. The broker ACL only lets anonymous
+clients use `+/rpc`, `+/credit` and `domain.vmflow.xyz/#`.
+
+Settings live under **Application Configuration → VMflow** (`make menuconfig`): broker host and
+port, keepalive, reconnect interval and buffer sizes. The send buffer (6 KB) holds every message
+until it is acknowledged; DEX audit dumps reach ~4 KB.
 
 ## RGB LED
 
