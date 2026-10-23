@@ -4,8 +4,9 @@
  * EVA-DTS audit reader: port of eva-dts.c from the ESP-IDF firmware
  * (mdb-esp32-cashless). Talks to the vending machine's DEX port, first
  * with DDCMP at 2400 baud and, if that yields nothing, with DEX/UCS at
- * 9600 baud. The audit text is printed and, when the vmflow MQTT session
- * is up, published on domain.vmflow.xyz/<subdomain>/rpc/dex.
+ * 9600 baud. Only the audit goes to stdout, so "dex > /tmp/audit.txt"
+ * captures it; status lines go to stderr. One read at a time: a second
+ * dex exits while the port is busy.
  *
  * Timeouts follow the ESP-IDF uart_read_bytes() calls they replace: the
  * wait restarts whenever a byte arrives, so they bound the gap between
@@ -22,6 +23,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -30,10 +32,6 @@
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
-
-#ifdef CONFIG_VMFLOW_MQTT
-#  include "vmflow_mqtt.h"
-#endif
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -62,6 +60,14 @@
  * Private Data
  ****************************************************************************/
 
+/* Held for the whole read. NuttX flat builds share an application's
+ * static data between invocations, so this also guards g_audit. Robust:
+ * if a dex dies holding it, the next one takes it over.
+ */
+
+static pthread_mutex_t g_lock;
+static pthread_once_t g_lock_once = PTHREAD_ONCE_INIT;
+
 static int g_fd = -1;
 
 static uint8_t g_audit[CONFIG_VMFLOW_DEX_BUFSIZE];
@@ -71,6 +77,32 @@ static bool g_truncated;
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
+
+static void lock_init(void)
+{
+  pthread_mutexattr_t attr;
+
+  pthread_mutexattr_init(&attr);
+  pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
+  pthread_mutex_init(&g_lock, &attr);
+  pthread_mutexattr_destroy(&attr);
+}
+
+static bool lock_take(void)
+{
+  int ret;
+
+  pthread_once(&g_lock_once, lock_init);
+
+  ret = pthread_mutex_trylock(&g_lock);
+  if (ret == EOWNERDEAD)
+    {
+      pthread_mutex_consistent(&g_lock);
+      ret = OK;
+    }
+
+  return ret == OK;
+}
 
 static void audit_put(FAR const uint8_t *data, size_t len)
 {
@@ -534,34 +566,8 @@ static bool dex_read(void)
 }
 
 /****************************************************************************
- * Publishing
+ * Command
  ****************************************************************************/
-
-static void audit_publish(void)
-{
-#ifdef CONFIG_VMFLOW_MQTT
-  char topic[64];
-  int ret;
-
-  if (CONFIG_VMFLOW_SUBDOMAIN[0] == '\0' || !vmflow_mqtt_running())
-    {
-      return;
-    }
-
-  snprintf(topic, sizeof(topic), "domain.vmflow.xyz/%s/rpc/dex",
-           CONFIG_VMFLOW_SUBDOMAIN);
-
-  ret = vmflow_mqtt_publish(topic, g_audit, g_len, 0, false);
-  if (ret < 0)
-    {
-      fprintf(stderr, "dex: publish on %s failed: %d\n", topic, ret);
-    }
-  else
-    {
-      fprintf(stderr, "dex: published on %s\n", topic);
-    }
-#endif
-}
 
 static void usage(FAR const char *progname)
 {
@@ -604,11 +610,18 @@ int main(int argc, FAR char *argv[])
         }
     }
 
+  if (!lock_take())
+    {
+      fprintf(stderr, "dex: busy, another read is in progress\n");
+      return EXIT_FAILURE;
+    }
+
   g_fd = open(CONFIG_VMFLOW_DEX_TTY, O_RDWR | O_NOCTTY);
   if (g_fd < 0)
     {
       fprintf(stderr, "dex: open %s failed: %d\n", CONFIG_VMFLOW_DEX_TTY,
               errno);
+      pthread_mutex_unlock(&g_lock);
       return EXIT_FAILURE;
     }
 
@@ -632,6 +645,7 @@ int main(int argc, FAR char *argv[])
   if (!ok)
     {
       fprintf(stderr, "dex: no answer from the machine\n");
+      pthread_mutex_unlock(&g_lock);
       return EXIT_FAILURE;
     }
 
@@ -645,6 +659,6 @@ int main(int argc, FAR char *argv[])
   fprintf(stderr, "dex: %zu bytes over %s%s\n", g_len, protocol,
           g_truncated ? " (truncated)" : "");
 
-  audit_publish();
+  pthread_mutex_unlock(&g_lock);
   return EXIT_SUCCESS;
 }

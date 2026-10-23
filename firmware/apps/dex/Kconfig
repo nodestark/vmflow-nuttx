@@ -10,9 +10,7 @@ config VMFLOW_DEX
 	---help---
 		Reads the vending machine's EVA-DTS audit data over the DEX port,
 		trying DDCMP (2400 baud) and then DEX/UCS (9600 baud), like
-		eva-dts.c in the ESP-IDF firmware. Prints the audit and, when the
-		MQTT client is connected, publishes it on
-		domain.vmflow.xyz/<subdomain>/rpc/dex.
+		eva-dts.c in the ESP-IDF firmware, and prints it on stdout.
 
 if VMFLOW_DEX
 
@@ -36,7 +34,6 @@ config VMFLOW_DEX_BUFSIZE
 	int "Audit buffer size"
 	default 8192
 	---help---
-		Largest audit kept; the rest is dropped. Published audits must
-		also fit VMFLOW_MQTT_SENDBUF.
+		Largest audit kept; the rest is dropped.
 
 endif

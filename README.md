@@ -16,7 +16,7 @@ firmware for the ESP32-S3.
 > pppd, so sockets, DNS and HTTP go over LTE-M/NB-IoT. The `vmflow` application keeps an MQTT
 > session with the VMflow broker (status, last will, subscription); MDB, Wi-Fi, the signed RPC
 > handler, BLE provisioning and OTA from the ESP-IDF firmware are not ported yet. The WS2812
-> status LED works through the `rgbled` command, and `dex` reads the machine's EVA-DTS audit.
+> status LED works through the `rgbled` command, and `dex` prints the machine's EVA-DTS audit.
 
 Related projects:
 
@@ -263,29 +263,31 @@ The pin is a board option (`VMFLOW_RGBLED_GPIO`); the command lives under
 ESP-IDF firmware. The port is UART2 on the same pins (GPIO9 TX, GPIO8 RX), `/dev/ttyS2`.
 
 ```
-nsh> dex               # DDCMP at 2400 baud, then DEX/UCS at 9600 if DDCMP got nothing
-nsh> dex ddcmp         # only DDCMP
-nsh> dex ucs           # only DEX/UCS
+nsh> dex                     # DDCMP at 2400 baud, then DEX/UCS at 9600 if DDCMP got nothing
+nsh> dex ddcmp               # only DDCMP
+nsh> dex ucs                 # only DEX/UCS
+nsh> dex > /tmp/audit.txt    # keep it in a file
+nsh> cat /tmp/audit.txt
 DXS*...
-ID1*...
-...
-dex: <n> bytes over DEX/UCS
-dex: published on domain.vmflow.xyz/123/rpc/dex
 ```
 
-The audit goes to stdout and, when `vmflow mqtt` is connected, is published (QoS 0) on
-`domain.vmflow.xyz/<subdomain>/rpc/dex`, the topic the ESP-IDF firmware uses. Without an answer it
-prints `dex: no answer from the machine` and exits with an error.
+Only the audit goes to stdout; status lines (`dex: <n> bytes over DEX/UCS`,
+`dex: no answer from the machine`) go to stderr and stay on the console when stdout is
+redirected. `/tmp` is a tmpfs in RAM, cleared on reboot.
+
+One read at a time: a `dex` started while another is running exits with
+`dex: busy, another read is in progress`. The lock is a robust mutex, so a `dex` that dies mid-read
+does not leave it held.
 
 Differences from the ESP-IDF version:
 
+- No MQTT publish; the output is plain text to use as needed.
 - DEX/UCS only runs when DDCMP returned nothing; the ESP-IDF firmware always runs both.
 - A silent line ends the read (the ESP-IDF loop kept reusing the last byte after a timeout), and a
   DDCMP message longer than the 1 KB receive buffer is rejected instead of overflowing it.
-- The RPC command `dex` is not wired yet; it will call the same code once the RPC handler is ported.
 
 Settings live under **Application Configuration → VMflow → EVA-DTS audit reader**: serial device
-and audit buffer size (8 KB). Published audits must also fit the MQTT send buffer (6 KB).
+and audit buffer size (8 KB).
 
 ## Configuration
 
