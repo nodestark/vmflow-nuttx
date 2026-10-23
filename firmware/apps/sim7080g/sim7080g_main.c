@@ -18,6 +18,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -265,11 +266,8 @@ static int ppp_task(int argc, FAR char *argv[])
   return pppd(&g_pppd_settings);
 }
 
-static int sim7080g_daemon(int argc, FAR char *argv[])
+static void ppp_settings_init(void)
 {
-  struct in_addr addr;
-  bool up;
-
   snprintf(g_connect_script, sizeof(g_connect_script),
            "TIMEOUT 5 "
            "\"\" AT "
@@ -294,17 +292,41 @@ static int sim7080g_daemon(int argc, FAR char *argv[])
   strlcpy(g_pppd_settings.pap_password, CONFIG_SIM7080G_PAP_PASSWORD,
           sizeof(g_pppd_settings.pap_password));
 #endif
+}
 
-  modem_power_on();
+static bool task_alive(pid_t pid)
+{
+  return pid > 0 && kill(pid, 0) == 0;
+}
 
-  g_state.ppp_pid = task_create("pppd", CONFIG_SIM7080G_PPP_PRIORITY,
-                                CONFIG_SIM7080G_PPP_STACKSIZE, ppp_task,
-                                NULL);
-  if (g_state.ppp_pid < 0)
+static int sim7080g_daemon(int argc, FAR char *argv[])
+{
+  struct in_addr addr;
+  bool up;
+
+  g_state.daemon_pid = getpid();
+
+  /* A daemon restarted by init finds pppd still running: keep it */
+
+  if (task_alive(g_state.ppp_pid))
     {
-      syslog(LOG_ERR, "sim7080g: pppd task failed: %d\n", errno);
-      g_state.daemon_pid = 0;
-      return 1;
+      syslog(LOG_INFO, "sim7080g: reusing pppd (pid %d)\n", g_state.ppp_pid);
+    }
+  else
+    {
+      ppp_settings_init();
+      modem_power_on();
+
+      g_state.ppp_pid = task_create("pppd", CONFIG_SIM7080G_PPP_PRIORITY,
+                                    CONFIG_SIM7080G_PPP_STACKSIZE, ppp_task,
+                                    NULL);
+      if (g_state.ppp_pid < 0)
+        {
+          syslog(LOG_ERR, "sim7080g: pppd task failed: %d\n", errno);
+          g_state.ppp_pid    = 0;
+          g_state.daemon_pid = 0;
+          return 1;
+        }
     }
 
   g_state.link_since = uptime();
@@ -357,7 +379,7 @@ static void show_status(void)
   struct in_addr dr;
   bool up;
 
-  if (g_state.daemon_pid <= 0)
+  if (!task_alive(g_state.daemon_pid))
     {
       printf("sim7080g: not running\n");
       return;
@@ -390,14 +412,21 @@ static void show_status(void)
 
 int main(int argc, FAR char *argv[])
 {
-  FAR const char *cmd = argc > 1 ? argv[1] : "start";
+  /* No argument: run the daemon in the foreground (nxinit service).
+   * "start": spawn it in the background (autostart disabled).
+   */
 
-  if (strcmp(cmd, "start") == 0)
+  if (argc < 2 || strcmp(argv[1], "start") == 0)
     {
-      if (g_state.daemon_pid > 0)
+      if (task_alive(g_state.daemon_pid))
         {
           printf("sim7080g: already running (pid %d)\n", g_state.daemon_pid);
-          return 0;
+          return argc < 2 ? 1 : 0;
+        }
+
+      if (argc < 2)
+        {
+          return sim7080g_daemon(argc, argv);
         }
 
       g_state.daemon_pid = task_create("sim7080gd", CONFIG_SIM7080G_PRIORITY,
@@ -414,7 +443,7 @@ int main(int argc, FAR char *argv[])
       return 0;
     }
 
-  if (strcmp(cmd, "status") == 0)
+  if (strcmp(argv[1], "status") == 0)
     {
       show_status();
       return 0;

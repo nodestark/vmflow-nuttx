@@ -1,0 +1,28 @@
+/****************************************************************************
+ * firmware/boards/vmflow-esp32s3/src/etc/init.d/init.rc
+ *
+ * nxinit services. Overrides boards/xtensa/esp32s3/common/src/etc/init.d/
+ * init.rc; rcS and rc.sysinit still come from the common directory.
+ *
+ ****************************************************************************/
+
+#include <nuttx/config.h>
+
+#ifdef CONFIG_SYSTEM_NSH
+service console sh
+   console
+   restart_period 1000
+#endif
+
+#ifdef CONFIG_SIM7080G_AUTOSTART
+service sim7080g sim7080g
+   restart_period 5000
+#endif
+
+on init
+#ifdef CONFIG_SYSTEM_NSH
+   start console
+#endif
+#ifdef CONFIG_SIM7080G_AUTOSTART
+   start sim7080g
+#endif

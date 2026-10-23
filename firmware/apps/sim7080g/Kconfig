@@ -16,6 +16,15 @@ config SIM7080G
 
 if SIM7080G
 
+config SIM7080G_AUTOSTART
+	bool "Start at boot (nxinit service)"
+	default y
+	depends on SYSTEM_NXINIT
+	---help---
+		Run the daemon as an nxinit service from /etc/init.d/init.rc, so
+		ppp0 comes up at boot and init restarts the daemon if it exits.
+		When disabled, start it by hand with "sim7080g start".
+
 config SIM7080G_PROGNAME
 	string "Program name"
 	default "sim7080g"

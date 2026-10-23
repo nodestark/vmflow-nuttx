@@ -58,7 +58,7 @@ your certificates live in another directory.
 
 ```bash
 make flash               # PORT=/dev/ttyACM0 by default
-make monitor             # NSH console, exit with Ctrl+]
+make monitor             # NSH console, exit with Ctrl+] (close it before flashing)
 ```
 
 ```
@@ -74,8 +74,8 @@ Flashing and the console share the chip's native USB port (GPIO19/20), which sho
 
 On the USB-Serial/JTAG, DTR and RTS drive the chip's BOOT and RESET lines. `make monitor`
 keeps both low; a terminal that asserts them on open holds the chip in reset or drops it
-into download mode. Linux may still pulse them when the port opens, which resets the board:
-run `sim7080g start` again after reconnecting the monitor.
+into download mode. Linux may still pulse them when the port opens, which resets the board;
+the modem service comes back up on its own.
 
 ### USB-OTG console (`vmflow-otg`)
 
@@ -90,12 +90,19 @@ VM, pass both USB IDs through.
 
 ## SIM7080G (LTE-M / NB-IoT)
 
+The modem is a boot service: nxinit starts `sim7080g` from `/etc/init.d/init.rc`
+(`firmware/boards/vmflow-esp32s3/src/etc/init.d/init.rc`) next to the console, and `ppp0`
+is up about 40 s after power-on with no command typed. Applications just open sockets.
+
 ```
-nsh> sim7080g start
-sim7080g: started (pid 7)
+nsh> ps
+    4     4     0 100 RR       Task      - Waiting  Semaphore ... init_main
+    5     5     4 100 RR       Task      - Running            ... sh
+    6     6     4 100 RR       Task      - Waiting  Signal    ... sim7080g
+    7     7     6 100 RR       Task      - Waiting  Semaphore ... pppd
 nsh> sim7080g status
-daemon  : pid 7, pppd pid 8
-link    : up for 33 s
+daemon  : pid 6, pppd pid 7
+link    : up for 46 s
 ip      : 100.82.56.6
 apn     : lf.br, cmnb 3, tty /dev/ttyS1
 nsh> nslookup mqtt.vmflow.xyz
@@ -112,7 +119,17 @@ nsh> ping -c 2 google.com
  /dev/ttyS1               UART1, GPIO17 TX / GPIO18 RX, 115200
 ```
 
-`sim7080g start` mirrors `sim7080g_task()` from the ESP-IDF firmware:
+| Command | Use |
+|---------|-----|
+| `sim7080g` | run the daemon in the foreground (what init does) |
+| `sim7080g start` | spawn it in the background, when autostart is off |
+| `sim7080g status` | link state, address, drops, modem resets |
+
+`CONFIG_SIM7080G_AUTOSTART` (default on) adds the service to `init.rc`; turn it off for
+boards without a modem or SIM. init restarts the daemon 5 s after it exits, and a restarted
+daemon reuses the running pppd.
+
+The daemon mirrors `sim7080g_task()` from the ESP-IDF firmware:
 
 1. Sends `+++` (a modem left in data mode by a previous run) and probes `AT`. A silent modem
    gets a PWRKEY pulse (`/dev/sim7080g_pwrkey`, GPIO14, 1.2 s).
@@ -125,8 +142,8 @@ nsh> ping -c 2 google.com
    off comes back on the next window.
 
 Settings live under **Application Configuration → VMflow → SIM7080G** (`make menuconfig`):
-APN (`lf.br`), network mode (Cat-M / NB-IoT / both), serial device, link timeout and PAP
-credentials. The PWRKEY pin is a board option (`VMFLOW_SIM7080G_PWRKEY_GPIO`).
+autostart, APN (`lf.br`), network mode (Cat-M / NB-IoT / both), serial device, link
+timeout and PAP credentials. The PWRKEY pin is a board option (`VMFLOW_SIM7080G_PWRKEY_GPIO`).
 
 Notes:
 
@@ -136,6 +153,8 @@ Notes:
   submodule stays untouched.
 - `ppp0` MTU is 1024 (`CONFIG_NET_TUN_PKTSIZE`), matching pppd's 1024-byte buffers.
 - pppd echoes the chat dialogue to the console; that output is hardwired in pppd.
+- `kill` cannot stop the daemon: without `CONFIG_SIG_DEFAULT` NuttX ignores signals that
+  have no handler.
 - No CMUX: while PPP is up the modem takes no AT commands, same as the ESP-IDF firmware.
 
 ## Configuration
