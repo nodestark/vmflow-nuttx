@@ -2,7 +2,7 @@
 # firmware/apps/sim7080g/Make.defs
 ############################################################################
 
-ifneq ($(CONFIG_SIM7080G),)
+ifneq ($(CONFIG_VMFLOW_SIM7080G),)
 CONFIGURED_APPS += $(APPDIR)/external/sim7080g
 endif
 
@@ -13,7 +13,7 @@ endif
 # ppp_conf.h defines its constants unconditionally: include it first, then
 # ppp_tuning.h overrides them; the sources' own #include is then a no-op.
 
-ifneq ($(CONFIG_SIM7080G),)
+ifneq ($(CONFIG_VMFLOW_SIM7080G),)
 ifeq ($(notdir $(CURDIR)),pppd)
 CFLAGS += -DIPCP_GET_PRI_DNS -DIPCP_GET_SEC_DNS
 CFLAGS += -include $(APPDIR)/netutils/pppd/ppp_conf.h

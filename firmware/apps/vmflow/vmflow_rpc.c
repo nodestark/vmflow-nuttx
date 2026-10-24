@@ -43,6 +43,7 @@
 
 #include "mdb.h"
 #include "vmflow.h"
+#include "vmflow_version.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -79,18 +80,19 @@ static void publish_info(FAR const char *sub)
   ppp.s_addr = 0;
   netlib_get_ipv4addr("ppp0", &ppp);
 
-  /* Same fields as rpc_publish_info() in the ESP-IDF firmware. There is no
-   * minimum free heap here: the allocator keeps the largest amount ever
+  /* Same fields as rpc_publish_info() in the ESP-IDF firmware, version
+   * being this firmware's (git describe), plus the NuttX release. There is
+   * no minimum free heap here: the allocator keeps the largest amount ever
    * used, so arena - usmblks is the low-water mark.
    */
 
   snprintf(json, sizeof(json),
-           "{\"version\":\"%s\",\"uptime_s\":%lld,"
+           "{\"version\":\"%s\",\"nuttx\":\"%s\",\"uptime_s\":%lld,"
            "\"free_heap\":%d,\"min_free_heap\":%d,\"machine_state\":%d,"
            "\"last_sale_price\":%lu,\"last_sale_item\":%u,"
            "\"last_vend_success_time\":%lld,"
            "\"ip_wifi\":\"\",\"ip_ppp\":\"%s\"}",
-           name.version, (long long)ts.tv_sec,
+           VMFLOW_VERSION, name.release, (long long)ts.tv_sec,
            mem.fordblks, mem.arena - mem.usmblks,
            g_machine.engine ? g_machine.state : -1,
            (unsigned long)g_machine.last_sale_price,
@@ -149,7 +151,7 @@ void vmflow_rpc(FAR const char *msg, size_t len)
   colon = memrchr(msg, ':', len);
   if (colon == NULL || !vmflow_verify(key, msg, colon - msg, colon + 1))
     {
-      syslog(LOG_WARNING, "rpc: rejected, bad hmac\n");
+      syslog(LOG_WARNING, "vmflow: rpc: rejected, bad hmac\n");
       return;
     }
 
@@ -160,7 +162,7 @@ void vmflow_rpc(FAR const char *msg, size_t len)
       !field(&p, colon + 1, args, sizeof(args)) ||
       !field(&p, colon + 1, buf, sizeof(buf)) || p != colon + 1)
     {
-      syslog(LOG_WARNING, "rpc: rejected, malformed\n");
+      syslog(LOG_WARNING, "vmflow: rpc: rejected, malformed\n");
       return;
     }
 
@@ -173,19 +175,20 @@ void vmflow_rpc(FAR const char *msg, size_t len)
   dt = (long)(time(NULL) - (time_t)ts);
   if (time(NULL) < VMFLOW_TIME_VALID || labs(dt) > RPC_FRESHNESS_S)
     {
-      syslog(LOG_WARNING, "rpc: rejected %s, stale ts (dt=%ld)\n", cmd, dt);
+      syslog(LOG_WARNING, "vmflow: rpc: rejected %s, stale ts (dt=%ld)\n",
+             cmd, dt);
       return;
     }
 
   has_args = args[0] != '\0' && strcmp(args, "-") != 0;
-  syslog(LOG_INFO, "rpc: %s %s\n", cmd, has_args ? args : "");
+  syslog(LOG_INFO, "vmflow: rpc: %s %s\n", cmd, has_args ? args : "");
 
   if (strcmp(cmd, "credit") == 0 && has_args)
     {
       ret = mdb_request(MDB_CMD_SESSION_OPEN, strtoul(args, NULL, 10));
       if (ret < 0)
         {
-          syslog(LOG_WARNING, "rpc: credit not queued: %d\n", ret);
+          syslog(LOG_WARNING, "vmflow: rpc: credit not queued: %d\n", ret);
           return;
         }
 
@@ -227,6 +230,6 @@ void vmflow_rpc(FAR const char *msg, size_t len)
     }
   else
     {
-      syslog(LOG_WARNING, "rpc: unknown command %s\n", cmd);
+      syslog(LOG_WARNING, "vmflow: rpc: unknown command %s\n", cmd);
     }
 }

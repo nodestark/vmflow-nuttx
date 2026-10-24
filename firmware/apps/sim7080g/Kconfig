@@ -3,7 +3,7 @@
 # see the file kconfig-language.txt in the NuttX tools repository.
 #
 
-config SIM7080G
+config VMFLOW_SIM7080G
 	tristate "SIM7080G LTE-M / NB-IoT modem daemon"
 	default n
 	depends on NET_UDP && NET_IPv4 && DEV_GPIO
@@ -14,9 +14,9 @@ config SIM7080G
 		PPP link. Once IPCP is up the modem is a regular network interface
 		(ppp0): sockets, DNS, MQTT and TLS work without knowing about it.
 
-if SIM7080G
+if VMFLOW_SIM7080G
 
-config SIM7080G_AUTOSTART
+config VMFLOW_SIM7080G_AUTOSTART
 	bool "Start at boot (nxinit service)"
 	default y
 	depends on SYSTEM_NXINIT
@@ -25,60 +25,70 @@ config SIM7080G_AUTOSTART
 		ppp0 comes up at boot and init restarts the daemon if it exits.
 		When disabled, start it by hand with "sim7080g start".
 
-config SIM7080G_PROGNAME
+config VMFLOW_SIM7080G_PROGNAME
 	string "Program name"
 	default "sim7080g"
 
-config SIM7080G_PRIORITY
+config VMFLOW_SIM7080G_PRIORITY
 	int "Daemon task priority"
 	default 100
 
-config SIM7080G_STACKSIZE
+config VMFLOW_SIM7080G_STACKSIZE
 	int "Daemon stack size"
 	default 4096
 
-config SIM7080G_PPP_PRIORITY
+config VMFLOW_SIM7080G_PPP_PRIORITY
 	int "pppd task priority"
 	default 100
 
-config SIM7080G_PPP_STACKSIZE
+config VMFLOW_SIM7080G_PPP_STACKSIZE
 	int "pppd stack size"
 	default 4096
 
-config SIM7080G_TTY
+config VMFLOW_SIM7080G_TTY
 	string "Modem serial device"
 	default "/dev/ttyS1"
 
-config SIM7080G_PWRKEY
+config VMFLOW_SIM7080G_PWRKEY
 	string "PWRKEY GPIO device"
 	default "/dev/gpio1"
 
-config SIM7080G_APN
+config VMFLOW_SIM7080G_APN
 	string "APN"
 	default "lf.br"
 
 choice
 	prompt "LTE network mode"
-	default SIM7080G_CMNB_BOTH
+	default VMFLOW_SIM7080G_CMNB_BOTH
 
-config SIM7080G_CMNB_CATM
+config VMFLOW_SIM7080G_CMNB_CATM
 	bool "Cat-M only"
 
-config SIM7080G_CMNB_NBIOT
+config VMFLOW_SIM7080G_CMNB_NBIOT
 	bool "NB-IoT only"
 
-config SIM7080G_CMNB_BOTH
+config VMFLOW_SIM7080G_CMNB_BOTH
 	bool "Both (LTE-M + NB-IoT)"
 
 endchoice
 
-config SIM7080G_CMNB
+config VMFLOW_SIM7080G_CMNB
 	int
-	default 1 if SIM7080G_CMNB_CATM
-	default 2 if SIM7080G_CMNB_NBIOT
-	default 3 if SIM7080G_CMNB_BOTH
+	default 1 if VMFLOW_SIM7080G_CMNB_CATM
+	default 2 if VMFLOW_SIM7080G_CMNB_NBIOT
+	default 3 if VMFLOW_SIM7080G_CMNB_BOTH
 
-config SIM7080G_LINK_TIMEOUT
+config VMFLOW_SIM7080G_NETWORK_TIME
+	bool "Set the clock from the network time (NITZ)"
+	default y
+	---help---
+		While the wall clock is not set, read the network time the modem
+		keeps (AT+CCLK, after enabling AT+CLTS once) before pppd takes
+		the UART, so signed RPC and BLE approvals work before NTP. One
+		read, no waiting: networks that send no time (some LTE-M/NB-IoT
+		ones) cost nothing, and NTP sets the clock there.
+
+config VMFLOW_SIM7080G_LINK_TIMEOUT
 	int "Seconds without link before toggling PWRKEY"
 	default 300
 	---help---
@@ -87,7 +97,7 @@ config SIM7080G_LINK_TIMEOUT
 		this many seconds, the daemon pulses PWRKEY to power-cycle a stuck
 		modem.
 
-config SIM7080G_PPP_TX_OFFLINE
+config VMFLOW_SIM7080G_PPP_TX_OFFLINE
 	int "pppd: frames sent without reply before dropping the link"
 	default 30
 	range 0 250
@@ -101,14 +111,14 @@ config SIM7080G_PPP_TX_OFFLINE
 
 if NETUTILS_PPPD_PAP
 
-config SIM7080G_PAP_USERNAME
+config VMFLOW_SIM7080G_PAP_USERNAME
 	string "PAP username"
 	default ""
 
-config SIM7080G_PAP_PASSWORD
+config VMFLOW_SIM7080G_PAP_PASSWORD
 	string "PAP password"
 	default ""
 
 endif # NETUTILS_PPPD_PAP
 
-endif # SIM7080G
+endif # VMFLOW_SIM7080G

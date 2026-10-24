@@ -23,7 +23,7 @@ service ntpc ntpcstart
    oneshot
 #endif
 
-#ifdef CONFIG_SIM7080G_AUTOSTART
+#ifdef CONFIG_VMFLOW_SIM7080G_AUTOSTART
 service sim7080g sim7080g
    restart_period 5000
 #endif
@@ -45,7 +45,7 @@ on init
 #ifdef CONFIG_SYSTEM_NTPC
    start ntpc
 #endif
-#ifdef CONFIG_SIM7080G_AUTOSTART
+#ifdef CONFIG_VMFLOW_SIM7080G_AUTOSTART
    start sim7080g
 #endif
 #ifdef CONFIG_VMFLOW_MDB_AUTOSTART

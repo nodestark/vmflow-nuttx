@@ -21,6 +21,7 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
 #include <termios.h>
@@ -43,6 +44,11 @@
 
 #define PPP_IFNAME            "ppp0"
 #define SUPERVISE_PERIOD_S    1     /* link check and status file */
+
+/* Wall clock below this is the unset clock, not network or NTP time */
+
+#define CLOCK_VALID_YEAR      2024
+#define CLOCK_VALID           1704067200   /* 2024-01-01 UTC */
 #define STATUS_NAME           "sim7080g"
 
 /* PWRKEY timing (SIM7080G hardware design: >1 s on, >1.2 s off) */
@@ -111,11 +117,11 @@ static int pwrkey_pulse(void)
   int fd;
   int ret;
 
-  fd = open(CONFIG_SIM7080G_PWRKEY, O_RDWR);
+  fd = open(CONFIG_VMFLOW_SIM7080G_PWRKEY, O_RDWR);
   if (fd < 0)
     {
       syslog(LOG_ERR, "sim7080g: open %s failed: %d\n",
-             CONFIG_SIM7080G_PWRKEY, errno);
+             CONFIG_VMFLOW_SIM7080G_PWRKEY, errno);
       return -errno;
     }
 
@@ -186,6 +192,136 @@ static bool modem_at(int fd, FAR const char *cmd, int timeout_ms)
   return false;
 }
 
+#ifdef CONFIG_VMFLOW_SIM7080G_NETWORK_TIME
+/* Send a query and copy the line starting with prefix (e.g. "+CCLK:")
+ * once "OK" arrives.
+ */
+
+static bool modem_query(int fd, FAR const char *cmd, FAR const char *prefix,
+                        FAR char *line, size_t linelen, int timeout_ms)
+{
+  char buf[128];
+  size_t len = 0;
+  struct pollfd pfd;
+  int64_t deadline;
+  FAR char *p;
+  FAR char *end;
+  ssize_t n;
+
+  tcflush(fd, TCIFLUSH);
+  write(fd, cmd, strlen(cmd));
+  write(fd, "\r", 1);
+
+  deadline = now_ms() + timeout_ms;
+  pfd.fd = fd;
+  pfd.events = POLLIN;
+
+  while (now_ms() < deadline && len < sizeof(buf) - 1)
+    {
+      if (poll(&pfd, 1, 100) <= 0)
+        {
+          continue;
+        }
+
+      n = read(fd, buf + len, sizeof(buf) - 1 - len);
+      if (n <= 0)
+        {
+          continue;
+        }
+
+      len += n;
+      buf[len] = '\0';
+
+      if (strstr(buf, "ERROR") != NULL)
+        {
+          return false;
+        }
+
+      if (strstr(buf, "\nOK") == NULL)
+        {
+          continue;
+        }
+
+      p = strstr(buf, prefix);
+      if (p == NULL)
+        {
+          return false;
+        }
+
+      end = strpbrk(p, "\r\n");
+      if (end != NULL)
+        {
+          *end = '\0';
+        }
+
+      strlcpy(line, p, linelen);
+      return true;
+    }
+
+  return false;
+}
+
+/* Set the wall clock from the network time the modem keeps (NITZ), so RPC
+ * freshness and BLE approvals work before PPP and NTP are up. NTP refines
+ * it later. +CCLK: "yy/MM/dd,hh:mm:ss+zz", local time, zz in quarters of
+ * an hour. Without network time the modem reports its own default clock,
+ * "80/01/06,...", which is 1980 and rejected.
+ *
+ * One read, no waiting: the modem keeps the time it got at its last attach
+ * across our reboots. Not every network sends it (some LTE-M/NB-IoT ones
+ * do not), and waiting for it would only delay PPP; NTP covers that case.
+ */
+
+static void modem_set_clock(int fd)
+{
+  struct timespec ts;
+  struct tm tm;
+  char line[64];
+  int zone;
+
+  if (time(NULL) >= CLOCK_VALID)
+    {
+      return;
+    }
+
+  /* Network time updates are off by default; the setting is kept in the
+   * modem's NVRAM, so it is written once. The network sends its time when
+   * the modem attaches, so a modem that was already attached restarts its
+   * radio to get it now rather than at the next attach.
+   */
+
+  if (modem_query(fd, "AT+CLTS?", "+CLTS:", line, sizeof(line), 1000) &&
+      atoi(line + 6) != 1)
+    {
+      modem_at(fd, "AT+CLTS=1", 1000);
+      modem_at(fd, "AT&W", 1000);
+      modem_at(fd, "AT+CFUN=0", 10000);
+      modem_at(fd, "AT+CFUN=1", 10000);
+      syslog(LOG_INFO, "sim7080g: network time enabled\n");
+    }
+
+  memset(&tm, 0, sizeof(tm));
+  if (!modem_query(fd, "AT+CCLK?", "+CCLK:", line, sizeof(line), 1000) ||
+      sscanf(line, "+CCLK: \"%d/%d/%d,%d:%d:%d%d", &tm.tm_year,
+             &tm.tm_mon, &tm.tm_mday, &tm.tm_hour, &tm.tm_min,
+             &tm.tm_sec, &zone) != 7 ||
+      tm.tm_year < CLOCK_VALID_YEAR - 2000 || tm.tm_year >= 80)
+    {
+      syslog(LOG_INFO, "sim7080g: no network time, waiting for NTP\n");
+      return;
+    }
+
+  tm.tm_year += 100;                      /* years since 1900 */
+  tm.tm_mon  -= 1;
+
+  ts.tv_sec  = timegm(&tm) - (time_t)zone * 15 * 60;
+  ts.tv_nsec = 0;
+  clock_settime(CLOCK_REALTIME, &ts);
+
+  syslog(LOG_INFO, "sim7080g: clock set from the network: %s\n", line + 7);
+}
+#endif /* CONFIG_VMFLOW_SIM7080G_NETWORK_TIME */
+
 static bool modem_sync(int fd)
 {
   int i;
@@ -210,11 +346,11 @@ static void modem_power_on(void)
 {
   int fd;
 
-  fd = open(CONFIG_SIM7080G_TTY, O_RDWR | O_NOCTTY | O_NONBLOCK);
+  fd = open(CONFIG_VMFLOW_SIM7080G_TTY, O_RDWR | O_NOCTTY | O_NONBLOCK);
   if (fd < 0)
     {
       syslog(LOG_ERR, "sim7080g: open %s failed: %d\n",
-             CONFIG_SIM7080G_TTY, errno);
+             CONFIG_VMFLOW_SIM7080G_TTY, errno);
       return;
     }
 
@@ -241,9 +377,14 @@ static void modem_power_on(void)
           /* Leave it to pppd retries and the link supervisor */
 
           syslog(LOG_ERR, "sim7080g: modem not answering\n");
+          close(fd);
+          return;
         }
     }
 
+#ifdef CONFIG_VMFLOW_SIM7080G_NETWORK_TIME
+  modem_set_clock(fd);
+#endif
   close(fd);
 }
 
@@ -282,16 +423,16 @@ static void ppp_settings_init(void)
            "\"+CGATT: 1\" ATD*99# "
            "TIMEOUT 30 "
            "CONNECT \\c",
-           CONFIG_SIM7080G_CMNB, CONFIG_SIM7080G_APN);
+           CONFIG_VMFLOW_SIM7080G_CMNB, CONFIG_VMFLOW_SIM7080G_APN);
 
-  strlcpy(g_pppd_settings.ttyname, CONFIG_SIM7080G_TTY,
+  strlcpy(g_pppd_settings.ttyname, CONFIG_VMFLOW_SIM7080G_TTY,
           sizeof(g_pppd_settings.ttyname));
   g_pppd_settings.connect_script    = g_connect_script;
   g_pppd_settings.disconnect_script = g_disconnect_script;
 #ifdef CONFIG_NETUTILS_PPPD_PAP
-  strlcpy(g_pppd_settings.pap_username, CONFIG_SIM7080G_PAP_USERNAME,
+  strlcpy(g_pppd_settings.pap_username, CONFIG_VMFLOW_SIM7080G_PAP_USERNAME,
           sizeof(g_pppd_settings.pap_username));
-  strlcpy(g_pppd_settings.pap_password, CONFIG_SIM7080G_PAP_PASSWORD,
+  strlcpy(g_pppd_settings.pap_password, CONFIG_VMFLOW_SIM7080G_PAP_PASSWORD,
           sizeof(g_pppd_settings.pap_password));
 #endif
 }
@@ -363,8 +504,8 @@ static void write_status(void)
 
   fprintf(out, "drops   : %u, modem resets: %u\n",
           g_state.link_drops, g_state.modem_resets);
-  fprintf(out, "apn     : %s, cmnb %d, tty %s\n", CONFIG_SIM7080G_APN,
-          CONFIG_SIM7080G_CMNB, CONFIG_SIM7080G_TTY);
+  fprintf(out, "apn     : %s, cmnb %d, tty %s\n", CONFIG_VMFLOW_SIM7080G_APN,
+          CONFIG_VMFLOW_SIM7080G_CMNB, CONFIG_VMFLOW_SIM7080G_TTY);
 
   daemon_status_commit(STATUS_NAME, out);
 }
@@ -386,9 +527,10 @@ static int sim7080g_daemon(int argc, FAR char *argv[])
       ppp_settings_init();
       modem_power_on();
 
-      g_state.ppp_pid = task_create("pppd", CONFIG_SIM7080G_PPP_PRIORITY,
-                                    CONFIG_SIM7080G_PPP_STACKSIZE, ppp_task,
-                                    NULL);
+      g_state.ppp_pid = task_create("pppd",
+                                    CONFIG_VMFLOW_SIM7080G_PPP_PRIORITY,
+                                    CONFIG_VMFLOW_SIM7080G_PPP_STACKSIZE,
+                                    ppp_task, NULL);
       if (g_state.ppp_pid < 0)
         {
           syslog(LOG_ERR, "sim7080g: pppd task failed: %d\n", errno);
@@ -428,10 +570,11 @@ static int sim7080g_daemon(int argc, FAR char *argv[])
        */
 
       if (!up &&
-          uptime() - g_state.link_since >= CONFIG_SIM7080G_LINK_TIMEOUT)
+          uptime() - g_state.link_since >=
+          CONFIG_VMFLOW_SIM7080G_LINK_TIMEOUT)
         {
           syslog(LOG_WARNING, "sim7080g: no link for %d s, toggling "
-                 "PWRKEY\n", CONFIG_SIM7080G_LINK_TIMEOUT);
+                 "PWRKEY\n", CONFIG_VMFLOW_SIM7080G_LINK_TIMEOUT);
           pwrkey_pulse();
           g_state.modem_resets++;
           g_state.link_since = uptime();
@@ -469,8 +612,9 @@ int main(int argc, FAR char *argv[])
           return sim7080g_daemon(argc, argv);
         }
 
-      pid = task_create("sim7080gd", CONFIG_SIM7080G_PRIORITY,
-                        CONFIG_SIM7080G_STACKSIZE, sim7080g_daemon, NULL);
+      pid = task_create("sim7080gd", CONFIG_VMFLOW_SIM7080G_PRIORITY,
+                        CONFIG_VMFLOW_SIM7080G_STACKSIZE, sim7080g_daemon,
+                        NULL);
       if (pid < 0)
         {
           printf("sim7080g: failed to start: %d\n", errno);

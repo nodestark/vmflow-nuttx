@@ -14,12 +14,19 @@ PORT   ?= /dev/ttyACM0
 BAUD   ?= 115200
 JOBS   ?= $(shell nproc)
 
+# Release of the nuttx/apps submodules. The shallow clone has no tags for
+# tools/version.sh to find, so the version is passed in (VERSION_ARG in the
+# container environment, read by every NuttX make); keep it in step
+# with the submodule pin (see "Updating NuttX" in the README).
+NUTTX_VERSION := 13.1.0
+
 # Host CA store, forwarded into the image so builds work behind TLS-inspecting proxies.
 EXTRA_CA_DIR ?= $(or $(wildcard /usr/local/share/ca-certificates),docker/ca)
 
 TTY        := $(shell [ -t 0 ] && echo -it)
 DOCKER_RUN := docker run --rm $(TTY) \
 	--user $(shell id -u):$(shell id -g) -e HOME=/tmp \
+	-e VERSION_ARG="-v $(NUTTX_VERSION)" \
 	-v $(CURDIR):/work -w /work/nuttx
 DEVICE     = --device $(PORT) --group-add $(shell stat -c %g $(PORT) 2>/dev/null || echo dialout)
 

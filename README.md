@@ -367,7 +367,7 @@ nsh> ping -c 2 google.com
 | `sim7080g start` | spawn it in the background, when autostart is off |
 | `sim7080g status` | link state, address, drops, modem resets |
 
-`CONFIG_SIM7080G_AUTOSTART` (default on) adds the service to `init.rc`; turn it off for
+`CONFIG_VMFLOW_SIM7080G_AUTOSTART` (default on) adds the service to `init.rc`; turn it off for
 boards without a modem or SIM. init restarts the daemon 5 s after it exits, and a restarted
 daemon reuses the running pppd.
 
@@ -379,7 +379,7 @@ The daemon mirrors `sim7080g_task()` from the ESP-IDF firmware:
    (drops a stale data call), `AT+CNMP=38`, `AT+CMNB=<mode>`, `AT+CGDCONT=1,"IP","<APN>"`,
    waits for `+CGATT: 1`, then `ATD*99#`. pppd retries it on its own until the modem is
    attached; IPCP sets the address, the default route and the operator's DNS servers.
-3. Watches `ppp0`. With no address for `CONFIG_SIM7080G_LINK_TIMEOUT` seconds (300), it
+3. Watches `ppp0`. With no address for `CONFIG_VMFLOW_SIM7080G_LINK_TIMEOUT` seconds (300), it
    pulses PWRKEY to power-cycle a hung modem. The key toggles power, so a modem that was
    off comes back on the next window.
 
@@ -400,7 +400,7 @@ Notes:
 - No CMUX: while PPP is up the modem takes no AT commands, same as the ESP-IDF firmware.
 - pppd drops the link after sending `AHDLC_TX_OFFLINE` frames with nothing received. Upstream
   uses 5, which a few back-to-back TCP segments hit within one LTE-M round trip;
-  `CONFIG_SIM7080G_PPP_TX_OFFLINE` (30) overrides it through `ppp_tuning.h`, force-included
+  `CONFIG_VMFLOW_SIM7080G_PPP_TX_OFFLINE` (30) overrides it through `ppp_tuning.h`, force-included
   into the pppd build.
 - TCP write buffers are on (`NET_TCP_WRITE_BUFFERS`, 64 IOBs). Without them every segment
   waits for its ACK and a non-blocking `send()` returns `EAGAIN`, which MQTT-C spins on.
@@ -471,7 +471,7 @@ Commands without an argument send `-`.
 | `credit:<cents>` | MDB session with that credit (`mdb_request`), beep | `.../rpc/confirm` `ok` |
 | `oos:-` | "command out of sequence" on the next poll | `.../rpc/confirm` `ok` |
 | `dex:-` | runs `dex`, publishes its stdout | `.../rpc/confirm` `ok`, then `.../rpc/dex` |
-| `info:-` | device snapshot JSON (version, uptime, heap, `machine_state`, last sale, `ip_ppp`) | `.../rpc/info` |
+| `info:-` | device snapshot JSON (`version` of this firmware, `nuttx` release, uptime, heap, `machine_state`, last sale, `ip_ppp`) | `.../rpc/info` |
 | `echo:-` | liveness / RTT | `.../rpc/echo` `<ts>` |
 | `buzzer:-` | 1 s beep | `.../rpc/confirm` `ok` |
 | `restart:-` | reboot after the ack is out | `.../rpc/confirm` `ok` |
@@ -486,10 +486,19 @@ From the engine's events, signed (`<msg>:<hmac>`) on `domain.vmflow.xyz/<subdoma
 | Event | Topic | Message |
 |-------|-------|---------|
 | `cash_sale` | `sale` | `<cents>:<item>:<ts>` |
+| `vend_success` in a credit session | `vend_success` | `<cents>:<item>:<ts>` |
 | `vend_failure` | `vend_fail` | `<cents>,<item>:<ts>` |
 
-As in the ESP-IDF firmware, cashless sales are not published here: the app reports them from
-the BLE notifications.
+Sessions follow the ESP-IDF firmware (upstream `2680d4d`):
+
+- **Credit sessions** (MQTT `credit`, or `mdb credit`): the backend recorded the sale when it
+  sent the credit, without the item. `vend_success` carries the item, so the backend maps the
+  product and debits the stock.
+- **App sessions** (BLE `02`, no fixed funds): the app reports the sale from the BLE
+  notifications, so nothing is published here.
+
+These are sent only while MQTT is connected; a report made during an outage is lost (the
+ESP-IDF firmware keeps them in the esp-mqtt outbox for up to an hour).
 
 ### BLE
 
@@ -613,16 +622,20 @@ Configured in the board's defconfig, used by the applications above:
 | `/data` | LittleFS on the SPI flash (1 MB at 0x180000), formatted on first boot |
 | `/tmp/<daemon>.status` | each daemon (`mdb`, `sim7080g`, `vmflow`) writes its status there, pid first; `<daemon> status` prints it and the pid tells whether it runs, so no command reads another task's memory |
 | GPIO | numbered like any NuttX board: `/dev/gpio0` buzzer, `/dev/gpio1` SIM7080G PWRKEY |
-| NTP | `ntpcstart` from `init.rc`; polls `pool.ntp.org` over `ppp0` once the link is up |
+| clock | before dialing, `sim7080g` reads the network time the modem keeps (NITZ, `AT+CCLK`; one read, no wait); then NTP (`ntpcstart` from `init.rc`) polls `pool.ntp.org` over `ppp0`. Some LTE-M/NB-IoT networks send no time (the bench SIM, APN `lf.br`, does not), and there only NTP sets it |
+| versions | `uname`: the NuttX release (`NUTTX_VERSION` in the Makefile, since the shallow clone has no tags); `vmflow status` and the `info` RPC: this firmware's `git describe` |
 | syslog | RAM buffer, read with `dmesg` (the USB-Serial/JTAG console has no low-level output, so the default channel showed nothing) |
+| logging | daemons log with `syslog`, each line prefixed with the program (`mdb:`, `sim7080g:`, `vmflow: mqtt:` ...), `LOG_ERR` for failures, `LOG_WARNING` for rejections and recoveries, `LOG_INFO` for state changes; commands print results on stdout and errors on stderr; the MDB engine logs nothing on the bus path |
 | watchdog | MWDT0 (`/dev/watchdog0`), started and fed by the MDB engine |
 | assert | a crash in an interrupt or kernel thread reboots at once (`BOARD_RESET_ON_ASSERT=1`); an asserting task is killed and init restarts it |
 
 Known issues:
 
-- After a reset by the hardware watchdog (`TG0WDT_SYS_RST`) the USB-Serial/JTAG console does not
-  come back until a reset from esptool (`make flash`, or `esptool chip-id`). Software resets
-  (`reboot`, the `restart` RPC, crashes) are not affected.
+- Twice during bring-up the USB-Serial/JTAG console did not come back after the watchdog reset
+  a board stuck in a crash loop (a stack overflow, before `BOARD_RESET_ON_ASSERT`); a reset from
+  esptool brought it back. A watchdog reset of a stalled engine (`kill -STOP` on `mdb`) does not
+  show it: the console, the engine and PPP all come back. Crashes now reboot through a software
+  reset instead of waiting for the watchdog.
 - `board_rmt_txinitialize() failed: -19` in `dmesg` is spurious: the NuttX function returns an
   uninitialized value when `DRIVERS_RC` is off. `/dev/leds0` is registered.
 - `ntpcstatus` and the NTP daemon overflow the default 2 KB stack (a 1 KB host name buffer);
@@ -644,8 +657,9 @@ for m in nuttx apps; do
   git -C $m fetch --depth 1 origin tag nuttx-X.Y.Z
   git -C $m checkout nuttx-X.Y.Z
 done
+# set NUTTX_VERSION := X.Y.Z in the Makefile (the shallow clone has no tags)
 make configure build      # rebuild and test on the board
-git add nuttx apps && git commit -m "build: bump NuttX to X.Y.Z"
+git add nuttx apps Makefile && git commit -m "build: bump NuttX to X.Y.Z"
 ```
 
 Update the toolchain/esptool versions in `docker/Dockerfile` if the new release's

@@ -12,3 +12,6 @@ firmware/apps/Kconfig
 **/.depend
 **/Make.dep
 *.o
+
+# Generated at build time
+firmware/apps/vmflow/vmflow_version.h

@@ -186,7 +186,7 @@ static void advertise(void)
   g_adv_rc = ble_gap_adv_set_fields(&fields);
   if (g_adv_rc != 0)
     {
-      syslog(LOG_ERR, "ble: adv fields: %d\n", g_adv_rc);
+      syslog(LOG_ERR, "vmflow: ble: adv fields: %d\n", g_adv_rc);
       return;
     }
 
@@ -198,7 +198,7 @@ static void advertise(void)
                                &params, gap_event, NULL);
   if (g_adv_rc != 0)
     {
-      syslog(LOG_ERR, "ble: adv start: %d\n", g_adv_rc);
+      syslog(LOG_ERR, "vmflow: ble: adv start: %d\n", g_adv_rc);
     }
 }
 
@@ -211,7 +211,7 @@ static void handle_write(FAR const uint8_t *buf, size_t len)
       case BLE_SET_SUBDOMAIN:
         if (vmflow_identity_set("subdomain", value) == 0)
           {
-            syslog(LOG_INFO, "ble: subdomain %s\n", value);
+            syslog(LOG_INFO, "vmflow: ble: subdomain %s\n", value);
             vmflow_ble_set_name(value);
             vmflow_led_update();
           }
@@ -220,7 +220,7 @@ static void handle_write(FAR const uint8_t *buf, size_t len)
       case BLE_SET_PASSKEY:
         if (vmflow_identity_set("passkey", value) == 0)
           {
-            syslog(LOG_INFO, "ble: passkey set\n");
+            syslog(LOG_INFO, "vmflow: ble: passkey set\n");
             vmflow_led_update();
           }
         break;
@@ -236,7 +236,7 @@ static void handle_write(FAR const uint8_t *buf, size_t len)
           }
         else
           {
-            syslog(LOG_WARNING, "ble: approval rejected\n");
+            syslog(LOG_WARNING, "vmflow: ble: approval rejected\n");
           }
         break;
 
@@ -291,7 +291,8 @@ static int gap_event(FAR struct ble_gap_event *event, FAR void *arg)
   switch (event->type)
     {
       case BLE_GAP_EVENT_CONNECT:
-        syslog(LOG_INFO, "ble: connect status %d\n", event->connect.status);
+        syslog(LOG_INFO, "vmflow: ble: connect status %d\n",
+               event->connect.status);
         if (event->connect.status != 0)
           {
             advertise();
@@ -303,7 +304,7 @@ static int gap_event(FAR struct ble_gap_event *event, FAR void *arg)
         break;
 
       case BLE_GAP_EVENT_DISCONNECT:
-        syslog(LOG_INFO, "ble: disconnect reason 0x%x\n",
+        syslog(LOG_INFO, "vmflow: ble: disconnect reason 0x%x\n",
                event->disconnect.reason);
         g_conn   = BLE_HS_CONN_HANDLE_NONE;
         g_notify = false;
@@ -328,14 +329,14 @@ static void on_sync(void)
 {
   ble_hs_id_infer_auto(0, &g_own_addr_type);
   g_synced = true;
-  syslog(LOG_INFO, "ble: synced, advertising %s\n", g_name);
+  syslog(LOG_INFO, "vmflow: ble: synced, advertising %s\n", g_name);
   advertise();
 }
 
 static void on_reset(int reason)
 {
   g_synced = false;
-  syslog(LOG_WARNING, "ble: host reset: %d\n", reason);
+  syslog(LOG_WARNING, "vmflow: ble: host reset: %d\n", reason);
 }
 
 static FAR void *hci_task(FAR void *param)
@@ -397,7 +398,8 @@ int vmflow_ble_start(void)
   ret = netlib_ifup(CONFIG_VMFLOW_BLE_IFNAME);
   if (ret < 0)
     {
-      syslog(LOG_ERR, "ble: ifup %s failed: %d\n", CONFIG_VMFLOW_BLE_IFNAME,
+      syslog(LOG_ERR, "vmflow: ble: ifup %s failed: %d\n",
+             CONFIG_VMFLOW_BLE_IFNAME,
              ret);
     }
 

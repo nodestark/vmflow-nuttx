@@ -44,6 +44,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <syslog.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -968,8 +969,8 @@ static int engine_open(void)
   g_mdb.fd = open(CONFIG_VMFLOW_MDB_DEVPATH, O_RDWR);
   if (g_mdb.fd < 0)
     {
-      fprintf(stderr, "mdb: open %s failed: %d\n",
-              CONFIG_VMFLOW_MDB_DEVPATH, errno);
+      syslog(LOG_ERR, "mdb: open %s failed: %d\n",
+             CONFIG_VMFLOW_MDB_DEVPATH, errno);
       return -1;
     }
 
@@ -982,7 +983,7 @@ static int engine_open(void)
 
   if (g_mdb.cmdq == (mqd_t)-1)
     {
-      fprintf(stderr, "mdb: mq_open failed: %d\n", errno);
+      syslog(LOG_ERR, "mdb: mq_open failed: %d\n", errno);
       engine_close();
       return -1;
     }
@@ -994,8 +995,8 @@ static int engine_open(void)
             (unsigned long)CONFIG_VMFLOW_MDB_WATCHDOG_TIMEOUT * 1000) < 0 ||
       ioctl(g_mdb.wdog, WDIOC_START, 0) < 0)
     {
-      fprintf(stderr, "mdb: watchdog %s unavailable: %d\n",
-              CONFIG_VMFLOW_MDB_WATCHDOG_DEVPATH, errno);
+      syslog(LOG_ERR, "mdb: watchdog %s unavailable: %d\n",
+             CONFIG_VMFLOW_MDB_WATCHDOG_DEVPATH, errno);
       if (g_mdb.wdog >= 0)
         {
           close(g_mdb.wdog);
@@ -1245,7 +1246,7 @@ int mdb_engine_run(int argc, FAR char *argv[])
       housekeeping();
     }
 
-  fprintf(stderr, "mdb: bus read failed: %d\n", errno);
+  syslog(LOG_ERR, "mdb: bus read failed: %d\n", errno);
   engine_close();
   daemon_status_remove(STATUS_NAME);
   return 1;

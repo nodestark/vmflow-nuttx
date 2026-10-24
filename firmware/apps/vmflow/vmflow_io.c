@@ -107,7 +107,8 @@ static FAR void *dex_thread(FAR void *arg)
   pid = exec_builtin(CONFIG_VMFLOW_DEX_COMMAND, argv, &param);
   if (pid < 0)
     {
-      syslog(LOG_ERR, "dex: cannot run %s: %d\n", CONFIG_VMFLOW_DEX_COMMAND,
+      syslog(LOG_ERR, "vmflow: dex: cannot run %s: %d\n",
+             CONFIG_VMFLOW_DEX_COMMAND,
              errno);
       goto out;
     }
@@ -136,7 +137,7 @@ static FAR void *dex_thread(FAR void *arg)
       vmflow_mqtt_publish(topic, audit, len, 0, false);
     }
 
-  syslog(LOG_INFO, "dex: %zd bytes published\n", len);
+  syslog(LOG_INFO, "vmflow: dex: %zd bytes published\n", len);
   free(audit);
 
 out:

@@ -25,11 +25,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/utsname.h>
+#include <syslog.h>
 #include <unistd.h>
 
 #include "daemon_status.h"
 #include "mdb.h"
 #include "vmflow.h"
+#include "vmflow_version.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -50,8 +52,8 @@ static void print_status(FAR FILE *out)
   bool installed;
 
   uname(&name);
-  fprintf(out, "vmflow  : %s %s, build %s\n", name.sysname, name.release,
-          name.version);
+  fprintf(out, "vmflow  : %s on %s %s (%s)\n", VMFLOW_VERSION,
+          name.sysname, name.release, name.version);
 
   installed = vmflow_identity(sub, NULL);
   fprintf(out, "device  : %s\n",
@@ -120,17 +122,17 @@ static int vmflow_daemon(int argc, FAR char *argv[])
 
   if (status_start() < 0)
     {
-      fprintf(stderr, "vmflow: cannot start the status thread\n");
+      syslog(LOG_ERR, "vmflow: cannot start the status thread\n");
     }
 
   if (vmflow_machine_start() < 0)
     {
-      fprintf(stderr, "vmflow: cannot start the MDB bridge\n");
+      syslog(LOG_ERR, "vmflow: cannot start the MDB bridge\n");
     }
 
   if (vmflow_ble_start() < 0)
     {
-      fprintf(stderr, "vmflow: cannot start BLE\n");
+      syslog(LOG_ERR, "vmflow: cannot start BLE\n");
     }
 
   return vmflow_mqtt_run();

@@ -7,6 +7,10 @@
  *
  *   vend_request / vend_success / vend_failure / session_end
  *                   BLE notification to the phone app (19 bytes, signed)
+ *   vend_success    "<price>:<item>:<ts>" signed on .../vend_success, for
+ *                   sessions funded by a credit; the backend attaches the
+ *                   item to the sale it recorded when it sent the credit.
+ *                   App sessions (no fixed funds) are reported by the app.
  *   vend_failure    "<price>,<item>:<ts>" signed on .../vend_fail
  *   cash_sale       "<price>:<item>:<ts>" signed on .../sale
  *
@@ -55,6 +59,14 @@
 struct vmflow_machine_s g_machine;
 
 /****************************************************************************
+ * Private Data
+ ****************************************************************************/
+
+/* The open session was funded by a credit (MQTT RPC or "mdb credit") */
+
+static bool g_credit_session;
+
+/****************************************************************************
  * Private Functions
  ****************************************************************************/
 
@@ -75,6 +87,12 @@ static void handle_event(FAR const struct mdb_evt_s *e)
 
   switch (e->evt)
     {
+      case MDB_EVT_SNAPSHOT:
+      case MDB_EVT_SESSION_BEGIN:
+        g_credit_session = e->state >= MDB_STATE_IDLE &&
+                           e->price != MDB_FUNDS_UNLIMITED;
+        break;
+
       case MDB_EVT_VEND_REQUEST:
         vmflow_ble_notify(BLE_VEND_REQUEST, e->price, e->item);
         break;
@@ -84,6 +102,14 @@ static void handle_event(FAR const struct mdb_evt_s *e)
         g_machine.last_sale_item         = e->item;
         g_machine.last_vend_success_time = time(NULL);
         vmflow_ble_notify(BLE_VEND_SUCCESS, e->price, e->item);
+
+        if (g_credit_session)
+          {
+            snprintf(msg, sizeof(msg), "%lu:%u:%lld",
+                     (unsigned long)e->price, e->item,
+                     (long long)time(NULL));
+            vmflow_publish_signed("vend_success", msg);
+          }
         break;
 
       case MDB_EVT_VEND_FAILURE:
@@ -96,6 +122,7 @@ static void handle_event(FAR const struct mdb_evt_s *e)
         break;
 
       case MDB_EVT_SESSION_END:
+        g_credit_session = false;
         vmflow_ble_notify(BLE_SESSION_COMPLETE, 0, 0);
         break;
 

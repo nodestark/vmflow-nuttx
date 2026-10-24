@@ -131,7 +131,8 @@ static void publish_callback(FAR void **state,
 
   if (g_rpc_head - g_rpc_tail == RPC_SLOTS)
     {
-      syslog(LOG_WARNING, "mqtt: rpc dropped, %d pending\n", RPC_SLOTS);
+      syslog(LOG_WARNING, "vmflow: mqtt: rpc dropped, %d pending\n",
+             RPC_SLOTS);
       return;
     }
 
@@ -169,7 +170,7 @@ static int broker_open(void)
   ret = getaddrinfo(CONFIG_VMFLOW_MQTT_HOST, port, &hints, &res);
   if (ret != 0)
     {
-      syslog(LOG_WARNING, "mqtt: resolve %s failed: %d\n",
+      syslog(LOG_WARNING, "vmflow: mqtt: resolve %s failed: %d\n",
              CONFIG_VMFLOW_MQTT_HOST, ret);
       return -EHOSTUNREACH;
     }
@@ -195,7 +196,7 @@ static int broker_open(void)
 
   if (fd < 0)
     {
-      syslog(LOG_WARNING, "mqtt: connect %s:%d failed: %d\n",
+      syslog(LOG_WARNING, "vmflow: mqtt: connect %s:%d failed: %d\n",
              CONFIG_VMFLOW_MQTT_HOST, CONFIG_VMFLOW_MQTT_PORT, errno);
       return -ECONNREFUSED;
     }
@@ -225,7 +226,7 @@ static int session_start(int fd)
 
   if (err != MQTT_OK)
     {
-      syslog(LOG_ERR, "mqtt: connect: %s\n", mqtt_error_str(err));
+      syslog(LOG_ERR, "vmflow: mqtt: connect: %s\n", mqtt_error_str(err));
       return -EIO;
     }
 
@@ -254,7 +255,7 @@ static void session_connected(void)
   g_mqtt.connects++;
   g_mqtt.since = uptime();
   vmflow_led_update();
-  syslog(LOG_INFO, "mqtt: connected to %s, subscribed %s\n",
+  syslog(LOG_INFO, "vmflow: mqtt: connected to %s, subscribed %s\n",
          CONFIG_VMFLOW_MQTT_HOST, topic);
 }
 
@@ -300,7 +301,7 @@ static void session_run(void)
       if (err != MQTT_OK)
         {
           g_mqtt.last_error = err;
-          syslog(LOG_WARNING, "mqtt: %s\n", mqtt_error_str(err));
+          syslog(LOG_WARNING, "vmflow: mqtt: %s\n", mqtt_error_str(err));
           return;
         }
 
