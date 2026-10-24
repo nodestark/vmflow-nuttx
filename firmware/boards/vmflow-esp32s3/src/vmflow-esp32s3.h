@@ -37,7 +37,7 @@ int esp32s3_bringup(void);
  * Name: esp32s3_gpio_init
  *
  * Description:
- *   Register the board GPIOs (SIM7080G PWRKEY) with the GPIO driver.
+ *   Register the board GPIOs (buzzer, SIM7080G PWRKEY) with the GPIO driver.
  *
  ****************************************************************************/
 

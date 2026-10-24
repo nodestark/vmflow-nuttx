@@ -13,6 +13,13 @@ config VMFLOW_SIM7080G_PWRKEY_GPIO
 		GPIO driving the SIM7080G PWRKEY through an inverting transistor
 		(high = key pressed). Exposed as /dev/sim7080g_pwrkey.
 
+config VMFLOW_BUZZER_GPIO
+	int "Buzzer GPIO"
+	default 12
+	depends on DEV_GPIO
+	---help---
+		GPIO powering the buzzer (high = on). Exposed as /dev/gpio0.
+
 config VMFLOW_RGBLED_GPIO
 	int "RGB LED (WS2812) GPIO"
 	default 21

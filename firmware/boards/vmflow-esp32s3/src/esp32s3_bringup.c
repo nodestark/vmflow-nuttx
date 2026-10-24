@@ -46,6 +46,10 @@
 #  include "esp32s3_board_rmt.h"
 #endif
 
+#ifdef CONFIG_ESPRESSIF_BLE
+#  include "esp32s3_ble.h"
+#endif
+
 #include "vmflow-esp32s3.h"
 
 /****************************************************************************
@@ -152,6 +156,16 @@ int esp32s3_bringup(void)
   if (ret < 0)
     {
       syslog(LOG_ERR, "ERROR: board_rmt_txinitialize() failed: %d\n", ret);
+    }
+#endif
+
+#ifdef CONFIG_ESPRESSIF_BLE
+  /* BLE controller, reached through the HCI socket (NimBLE in vmflow) */
+
+  ret = esp32s3_ble_initialize();
+  if (ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: esp32s3_ble_initialize() failed: %d\n", ret);
     }
 #endif
 

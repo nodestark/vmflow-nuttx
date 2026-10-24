@@ -14,13 +14,22 @@ service console sh
    restart_period 1000
 #endif
 
+/* Wall clock for RPC freshness and sale timestamps. ntpcstart spawns the
+ * NTP daemon and returns; the daemon waits for the network on its own.
+ */
+
+#ifdef CONFIG_SYSTEM_NTPC
+service ntpc ntpcstart
+   oneshot
+#endif
+
 #ifdef CONFIG_SIM7080G_AUTOSTART
 service sim7080g sim7080g
    restart_period 5000
 #endif
 
-#ifdef CONFIG_VMFLOW_MQTT_AUTOSTART
-service mqtt vmflow mqtt
+#ifdef CONFIG_VMFLOW_AUTOSTART
+service vmflow vmflow
    restart_period 5000
 #endif
 
@@ -33,12 +42,15 @@ on init
 #ifdef CONFIG_SYSTEM_NSH
    start console
 #endif
+#ifdef CONFIG_SYSTEM_NTPC
+   start ntpc
+#endif
 #ifdef CONFIG_SIM7080G_AUTOSTART
    start sim7080g
 #endif
-#ifdef CONFIG_VMFLOW_MQTT_AUTOSTART
-   start mqtt
-#endif
 #ifdef CONFIG_VMFLOW_MDB_AUTOSTART
    start mdb
+#endif
+#ifdef CONFIG_VMFLOW_AUTOSTART
+   start vmflow
 #endif
