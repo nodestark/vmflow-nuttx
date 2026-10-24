@@ -3,13 +3,15 @@
  *
  * MDB cashless engine, client side. The engine (the "mdb" service) is the
  * only owner of the bus; any task asks it for a session, a vend decision
- * and so on through a POSIX message queue, and can follow what happens on
- * the bus through the event queue. Amounts are in 1/100 currency units
- * (cents); the engine converts them to the MDB scale factor.
+ * and so on through a POSIX message queue, and follows what happens on the
+ * bus through an event queue of its own. Amounts are in 1/100 currency
+ * units (cents); the engine converts them to the MDB scale factor.
  *
- * Other apps include this header with
+ * The queues and these structs are the whole contract, so the client side
+ * is this header alone: other apps add
  *   CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/external/mdb
- * and call mdb_request(), which is in libapps through mdb_client.c.
+ * and build whether the engine is configured or not. Without a running
+ * engine every call fails with ENOENT.
  *
  ****************************************************************************/
 
@@ -20,14 +22,20 @@
  * Included Files
  ****************************************************************************/
 
+#include <errno.h>
+#include <fcntl.h>
+#include <mqueue.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <unistd.h>
 
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define MDB_CMD_MQ           "/mdb_cmd"   /* clients -> engine */
-#define MDB_EVT_MQ           "/mdb_evt"   /* engine -> one reader */
+#define MDB_CMD_MQ           "/mdb_cmd"     /* clients -> engine */
+#define MDB_EVT_MQ_FMT       "/mdb_evt.%d"  /* engine -> one subscriber */
+#define MDB_EVT_MQ_DEPTH     16
 
 /* MDB_CMD_SESSION_OPEN amount for a session with no fixed funds: the VMC
  * sees unlimited funds and every vend waits for MDB_CMD_VEND_APPROVE or
@@ -46,12 +54,14 @@ enum mdb_cmd_e
   MDB_CMD_SESSION_CLOSE,    /* cancel the session (or a pending credit) */
   MDB_CMD_VEND_APPROVE,     /* approve the vend being requested */
   MDB_CMD_VEND_DENY,        /* deny it */
-  MDB_CMD_OUT_OF_SEQUENCE   /* answer the next poll with "out of sequence" */
+  MDB_CMD_OUT_OF_SEQUENCE,  /* answer the next poll with "out of sequence" */
+  MDB_CMD_SUBSCRIBE,        /* amount = pid owning MDB_EVT_MQ_FMT queue */
+  MDB_CMD_UNSUBSCRIBE       /* amount = pid */
 };
 
 struct mdb_cmd_s
 {
-  uint32_t amount;          /* cents, MDB_CMD_SESSION_OPEN only */
+  uint32_t amount;          /* cents, or a pid */
   uint8_t cmd;              /* enum mdb_cmd_e */
 };
 
@@ -76,7 +86,11 @@ enum mdb_evt_e
   MDB_EVT_VEND_SUCCESS,     /* price, item */
   MDB_EVT_VEND_FAILURE,     /* price, item */
   MDB_EVT_SESSION_END,      /* price = funds left unspent */
-  MDB_EVT_CASH_SALE         /* price, item: paid in cash, not by us */
+  MDB_EVT_CASH_SALE,        /* price, item: paid in cash, not by us */
+  MDB_EVT_BUS_LOST,         /* the VMC stopped polling; reader inactive */
+  MDB_EVT_CREDIT_EXPIRED,   /* price = pending credit no session took */
+  MDB_EVT_SNAPSHOT          /* first event after subscribing: state, and
+                             * price = session funds */
 };
 
 struct mdb_evt_s
@@ -88,7 +102,7 @@ struct mdb_evt_s
 };
 
 /****************************************************************************
- * Public Function Prototypes
+ * Inline Functions
  ****************************************************************************/
 
 /****************************************************************************
@@ -99,13 +113,113 @@ struct mdb_evt_s
  *   at the next poll from the VMC, if the reader state allows it.
  *
  * Returned Value:
- *   OK, -ENOENT if the engine is not running, -EAGAIN if its queue is full.
+ *   OK, -ENOENT if the engine never ran, -EAGAIN if its queue is full.
  *
  ****************************************************************************/
 
-int mdb_request(uint8_t cmd, uint32_t amount);
+static inline int mdb_request(uint8_t cmd, uint32_t amount)
+{
+  struct mdb_cmd_s msg;
+  mqd_t mq;
+  int ret = 0;
 
-FAR const char *mdb_state_name(uint8_t state);
-FAR const char *mdb_event_name(uint8_t evt);
+  msg.amount = amount;
+  msg.cmd    = cmd;
+
+  /* No O_CREAT: the engine creates the queue */
+
+  mq = mq_open(MDB_CMD_MQ, O_WRONLY | O_NONBLOCK);
+  if (mq == (mqd_t)-1)
+    {
+      return -errno;
+    }
+
+  if (mq_send(mq, (FAR const char *)&msg, sizeof(msg), 0) < 0)
+    {
+      ret = -errno;
+    }
+
+  mq_close(mq);
+  return ret;
+}
+
+/****************************************************************************
+ * Name: mdb_subscribe
+ *
+ * Description:
+ *   Create this process's event queue and ask the engine to copy every
+ *   event into it. The engine answers with MDB_EVT_SNAPSHOT, then the
+ *   events as they happen; a subscriber that falls behind loses events
+ *   (the engine never blocks on it). One subscription per process.
+ *
+ * Returned Value:
+ *   The queue to mq_receive() struct mdb_evt_s from, or (mqd_t)-1 with
+ *   errno set.
+ *
+ ****************************************************************************/
+
+static inline mqd_t mdb_subscribe(int oflags)
+{
+  struct mq_attr attr;
+  char name[24];
+  mqd_t mq;
+  int ret;
+
+  snprintf(name, sizeof(name), MDB_EVT_MQ_FMT, (int)getpid());
+
+  attr.mq_flags   = 0;
+  attr.mq_maxmsg  = MDB_EVT_MQ_DEPTH;
+  attr.mq_msgsize = sizeof(struct mdb_evt_s);
+  attr.mq_curmsgs = 0;
+
+  mq = mq_open(name, O_RDONLY | O_CREAT | oflags, 0666, &attr);
+  if (mq == (mqd_t)-1)
+    {
+      return mq;
+    }
+
+  ret = mdb_request(MDB_CMD_SUBSCRIBE, (uint32_t)getpid());
+  if (ret < 0)
+    {
+      mq_close(mq);
+      mq_unlink(name);
+      errno = -ret;
+      return (mqd_t)-1;
+    }
+
+  return mq;
+}
+
+static inline void mdb_unsubscribe(mqd_t mq)
+{
+  char name[24];
+
+  snprintf(name, sizeof(name), MDB_EVT_MQ_FMT, (int)getpid());
+  mdb_request(MDB_CMD_UNSUBSCRIBE, (uint32_t)getpid());
+  mq_close(mq);
+  mq_unlink(name);
+}
+
+static inline FAR const char *mdb_state_name(uint8_t state)
+{
+  static FAR const char *const names[] =
+  {
+    "inactive", "disabled", "enabled", "idle", "vend"
+  };
+
+  return state < sizeof(names) / sizeof(names[0]) ? names[state] : "?";
+}
+
+static inline FAR const char *mdb_event_name(uint8_t evt)
+{
+  static FAR const char *const names[] =
+  {
+    "state", "session_begin", "vend_request", "vend_approved",
+    "vend_denied", "vend_success", "vend_failure", "session_end",
+    "cash_sale", "bus_lost", "credit_expired", "snapshot"
+  };
+
+  return evt < sizeof(names) / sizeof(names[0]) ? names[evt] : "?";
+}
 
 #endif /* __VMFLOW_APPS_MDB_MDB_H */

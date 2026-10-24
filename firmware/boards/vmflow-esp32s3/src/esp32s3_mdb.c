@@ -5,7 +5,8 @@
  * mode bit), bit-banged on two GPIOs like mdb-slave-esp32s3.c in the
  * ESP-IDF firmware. A falling edge on RX is a start bit; the interrupt
  * samples the word in place and queues it. read() and write() move
- * uint16_t words, bit 8 being the mode bit.
+ * uint16_t words, bit 8 being the mode bit; poll() reports POLLIN while a
+ * word is queued.
  *
  ****************************************************************************/
 
@@ -17,6 +18,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -56,6 +58,7 @@ struct mdb_dev_s
   volatile uint8_t head;          /* written by the interrupt */
   volatile uint8_t tail;          /* written by read() */
   sem_t rxsem;                    /* one count per queued word */
+  FAR struct pollfd *fds;         /* the engine's poll(), if waiting */
   bool open;
   uint32_t overruns;
 };
@@ -70,6 +73,8 @@ static ssize_t mdb_read(FAR struct file *filep, FAR char *buffer,
                         size_t buflen);
 static ssize_t mdb_write(FAR struct file *filep, FAR const char *buffer,
                          size_t buflen);
+static int     mdb_poll(FAR struct file *filep, FAR struct pollfd *fds,
+                        bool setup);
 
 /****************************************************************************
  * Private Data
@@ -81,6 +86,7 @@ static const struct file_operations g_mdb_fops =
   .close = mdb_close,
   .read  = mdb_read,
   .write = mdb_write,
+  .poll  = mdb_poll,
 };
 
 static struct mdb_dev_s g_mdb;
@@ -131,6 +137,7 @@ static int mdb_rx_interrupt(int irq, FAR void *context, FAR void *arg)
   priv->rxbuf[priv->head] = word;
   priv->head = next;
   nxsem_post(&priv->rxsem);
+  poll_notify(&priv->fds, 1, POLLIN);
   return OK;
 }
 
@@ -264,6 +271,41 @@ static ssize_t mdb_write(FAR struct file *filep, FAR const char *buffer,
     }
 
   return i;
+}
+
+static int mdb_poll(FAR struct file *filep, FAR struct pollfd *fds,
+                    bool setup)
+{
+  FAR struct mdb_dev_s *priv = filep->f_inode->i_private;
+  irqstate_t flags;
+  int ret = OK;
+
+  flags = enter_critical_section();
+
+  if (setup)
+    {
+      if (priv->fds != NULL)
+        {
+          ret = -EBUSY;
+        }
+      else
+        {
+          priv->fds = fds;
+          fds->priv = &priv->fds;
+          if (priv->head != priv->tail)
+            {
+              poll_notify(&priv->fds, 1, POLLIN);
+            }
+        }
+    }
+  else if (fds->priv != NULL)
+    {
+      *(FAR struct pollfd **)fds->priv = NULL;
+      fds->priv = NULL;
+    }
+
+  leave_critical_section(flags);
+  return ret;
 }
 
 /****************************************************************************

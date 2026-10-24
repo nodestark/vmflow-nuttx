@@ -111,10 +111,63 @@ config VMFLOW_MDB_DECIMAL_PLACES
 	range 0 3
 
 config VMFLOW_MDB_SESSION_TIMEOUT
-	int "Session timeout (s)"
+	int "Session inactivity timeout (s)"
 	default 60
 	---help---
-		A session with no vend for this long is cancelled (a vend still
-		waiting for approve/deny is denied).
+		A session with no vend activity for this long is cancelled. Each
+		vend request and outcome restarts the count.
+
+config VMFLOW_MDB_APPROVE_TIMEOUT
+	int "Vend approval timeout (s)"
+	default 8
+	range 1 255
+	---help---
+		A vend in an "open" session that gets no approve/deny for this
+		long is denied. Keep it below the response time reported to the
+		VMC, so the reader answers before the VMC gives up.
+
+config VMFLOW_MDB_RESPONSE_TIME
+	int "Maximum response time reported to the VMC (s)"
+	default 10
+	range 1 255
+	---help---
+		Sent in READER CONFIG DATA: how long the VMC waits for the
+		reader, notably for a vend approval. The ESP-IDF firmware sends
+		3; an approval that crosses LTE-M needs more.
+
+config VMFLOW_MDB_BUS_TIMEOUT
+	int "Bus silence timeout (s)"
+	default 5
+	---help---
+		With no frame for the reader for this long (machine off, cable
+		out), the reader drops to inactive, the session ends and the
+		next poll is answered with JUST RESET.
+
+config VMFLOW_MDB_CREDIT_TIMEOUT
+	int "Pending credit timeout (s)"
+	default 120
+	---help---
+		A credit that finds no session for this long (reader not
+		enabled) is dropped, with a credit_expired event so the sender
+		can give it back. Each new credit restarts the count.
+
+config VMFLOW_MDB_WATCHDOG
+	bool "Hardware watchdog"
+	default y
+	depends on WATCHDOG
+	---help---
+		The engine starts the watchdog and feeds it at least once a
+		second. If the engine stops (and init does not bring it back in
+		time), the board resets.
+
+config VMFLOW_MDB_WATCHDOG_DEVPATH
+	string "Watchdog device"
+	default "/dev/watchdog0"
+	depends on VMFLOW_MDB_WATCHDOG
+
+config VMFLOW_MDB_WATCHDOG_TIMEOUT
+	int "Watchdog timeout (s)"
+	default 10
+	depends on VMFLOW_MDB_WATCHDOG
 
 endif

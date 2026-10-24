@@ -115,7 +115,7 @@ static int show_events(int seconds)
   struct timespec deadline;
   mqd_t mq;
 
-  mq = mq_open(MDB_EVT_MQ, O_RDONLY);
+  mq = mdb_subscribe(0);
   if (mq == (mqd_t)-1)
     {
       fprintf(stderr, "mdb: engine not running\n");
@@ -128,9 +128,10 @@ static int show_events(int seconds)
   while (mq_timedreceive(mq, (FAR char *)&evt, sizeof(evt), NULL,
                          &deadline) == sizeof(evt))
     {
-      if (evt.evt == MDB_EVT_STATE)
+      if (evt.evt == MDB_EVT_STATE || evt.evt == MDB_EVT_SNAPSHOT)
         {
-          printf("state %s\n", mdb_state_name(evt.state));
+          printf("%s %s\n", mdb_event_name(evt.evt),
+                 mdb_state_name(evt.state));
         }
       else if (evt.price == MDB_FUNDS_UNLIMITED)
         {
@@ -144,7 +145,7 @@ static int show_events(int seconds)
         }
     }
 
-  mq_close(mq);
+  mdb_unsubscribe(mq);
   return EXIT_SUCCESS;
 }
 
