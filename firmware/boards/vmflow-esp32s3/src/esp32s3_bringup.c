@@ -155,6 +155,14 @@ int esp32s3_bringup(void)
     }
 #endif
 
+#ifdef CONFIG_VMFLOW_MDB_DEVICE
+  ret = board_mdb_initialize();
+  if (ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: board_mdb_initialize() failed: %d\n", ret);
+    }
+#endif
+
   UNUSED(ret);
   return OK;
 }

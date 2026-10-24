@@ -46,6 +46,18 @@ int esp32s3_gpio_init(void);
 #endif
 
 /****************************************************************************
+ * Name: board_mdb_initialize
+ *
+ * Description:
+ *   Set up the bit-banged MDB bus pins and register /dev/mdb0.
+ *
+ ****************************************************************************/
+
+#ifdef CONFIG_VMFLOW_MDB_DEVICE
+int board_mdb_initialize(void);
+#endif
+
+/****************************************************************************
  * Name: board_spiflash_init
  *
  * Description:

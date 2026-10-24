@@ -21,4 +21,25 @@ config VMFLOW_RGBLED_GPIO
 		Data pin of the addressable RGB LED, driven by an RMT TX channel.
 		Exposed as /dev/leds0 when WS2812_NON_SPI_DRIVER is enabled.
 
+config VMFLOW_MDB_DEVICE
+	bool "MDB bus driver (/dev/mdb0)"
+	default n
+	select ESPRESSIF_GPIO_IRQ
+	---help---
+		Bit-banged 9-bit MDB bus at 9600 baud, read and written as
+		uint16_t words (bit 8 = mode bit) through /dev/mdb0. Used by the
+		mdb engine.
+
+if VMFLOW_MDB_DEVICE
+
+config VMFLOW_MDB_RX_GPIO
+	int "MDB RX GPIO"
+	default 4
+
+config VMFLOW_MDB_TX_GPIO
+	int "MDB TX GPIO"
+	default 5
+
+endif # VMFLOW_MDB_DEVICE
+
 endif # ARCH_BOARD_CUSTOM

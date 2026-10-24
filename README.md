@@ -13,10 +13,12 @@ firmware for the ESP32-S3.
 
 > **Status** — bring-up. NuttX boots with an NSH console on the chip's native USB port
 > (USB-Serial/JTAG). The SIM7080G comes up as a regular network interface (`ppp0`) through
-> pppd, so sockets, DNS and HTTP go over LTE-M/NB-IoT. The `vmflow` application keeps an MQTT
-> session with the VMflow broker (status, last will, subscription); MDB, Wi-Fi, the signed RPC
-> handler, BLE provisioning and OTA from the ESP-IDF firmware are not ported yet. The WS2812
-> status LED works through the `rgbled` command, and `dex` prints the machine's EVA-DTS audit.
+> pppd, so sockets, DNS and HTTP go over LTE-M/NB-IoT. The `mdb` engine answers the vending
+> machine as an MDB cashless device, and any task opens sessions and approves vends through it.
+> The `vmflow` application keeps an MQTT session with the VMflow broker (status, last will,
+> subscription); Wi-Fi, the signed RPC handler (so `credit` from the backend), BLE provisioning
+> and OTA from the ESP-IDF firmware are not ported yet. The WS2812 status LED works through the
+> `rgbled` command, and `dex` prints the machine's EVA-DTS audit.
 
 ![MDB ESP32-S3 SIM7080G board](docs/mdb-slave-esp32s3-sim7080g_pcb_v2.jpg)
 
@@ -38,11 +40,13 @@ Related projects:
 ├── firmware/
 │   ├── apps/                 VMflow applications, linked as apps/external
 │   │   ├── vmflow/           cashless application (`vmflow` NSH command), MQTT client
+│   │   ├── mdb/              MDB cashless engine and its client API (`mdb` command, mdb.h)
 │   │   ├── sim7080g/         modem daemon: power, pppd, link supervision
 │   │   ├── rgbled/           `rgbled` command for the WS2812 status LED
 │   │   └── dex/              `dex` command: EVA-DTS audit over DDCMP or DEX/UCS
 │   └── boards/vmflow-esp32s3/
-│       ├── src/              board code (derived from esp32s3-devkit), PWRKEY GPIO, RGB LED
+│       ├── src/              board code (derived from esp32s3-devkit), PWRKEY GPIO, RGB LED,
+│       │                     MDB bus driver
 │       └── configs/
 │           ├── vmflow/       default: NSH on USB-Serial/JTAG, SIM7080G + PPP
 │           └── vmflow-otg/   alternative: NSH on USB-OTG CDC-ACM
@@ -115,6 +119,80 @@ The console moves to the USB-OTG peripheral as a CDC-ACM device (`0525:a4a7` Nut
 CDC/ACM, marked experimental in NuttX). The port changes identity when NuttX starts, so
 esptool can no longer reach the chip: to flash again, hold **BOOT** while plugging in. On a
 VM, pass both USB IDs through.
+
+## MDB
+
+Two layers, as in the ESP-IDF firmware's `mdb_cashless_task()`, split so the bus has a single
+owner:
+
+- **Engine** (`mdb`, an nxinit service): the only task on the bus. It answers the VMC as a
+  level 1 cashless device (address 0x10) and keeps the reader state.
+- **Clients**: any task, script or NSH command. They queue requests for the engine (open a
+  session with credit, approve or deny a vend, cancel) and can follow what happens on the bus.
+
+```
+ vmflow, scripts, `mdb credit 1.00`      mdb_request()      -> /mdb_cmd (mqueue)
+ mdb engine                              state machine      -> /mdb_evt (mqueue)
+ /dev/mdb0                               9-bit words, uint16_t per word, bit 8 = mode
+ GPIO4 RX / GPIO5 TX                     bit-banged 9600 baud, falling-edge interrupt
+```
+
+```
+nsh> mdb status
+engine  : pid 7, up 53 s, /dev/mdb0, address 0x10
+state   : idle, vmc level 2
+session : funds 100, 16 s
+pending : credit 50
+bus     : 638 words, 274 frames for us, 0 bad
+totals  : sessions 1, vends 0, failed 0, cash 0
+currency: 0xffff, scale 1, decimals 2 (amounts in cents)
+nsh> mdb events 30
+state idle
+session_begin price 1.00 item 0
+state enabled
+session_end price 1.00 item 0
+```
+
+| Command | Use |
+|---------|-----|
+| `mdb` | run the engine in the foreground (what init does) |
+| `mdb start` | spawn it in the background, when autostart is off |
+| `mdb status` | reader state, session, pending credit, bus counters |
+| `mdb credit <amount>` | begin a session with that much credit (`1`, `1.5`, `1,50`) |
+| `mdb open` | begin a session where every vend waits for `approve`/`deny` (app flow) |
+| `mdb close` | cancel the session; with none open, drop the pending credit |
+| `mdb approve`, `mdb deny` | answer the vend the VMC is asking for |
+| `mdb oos` | answer the next poll with "command out of sequence" |
+| `mdb events [s]` | print the engine's events for `s` seconds (60) |
+
+From C, include `mdb.h` (`CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/external/mdb`) and call
+`mdb_request(MDB_CMD_SESSION_OPEN, 100)`; amounts are in cents, converted to the MDB scale
+factor by the engine. Events (`struct mdb_evt_s`) come from `mq_receive()` on `MDB_EVT_MQ`.
+
+How the engine behaves:
+
+- Requests act on the VMC's next poll and only where the state allows: a session begins once
+  the reader is enabled, so a credit sent before that waits as `pending` (credits add up).
+- With credit, the engine approves a vend that fits the funds and denies one that does not;
+  a failed vend gives the price back to the funds. An `open` session has no funds: each vend
+  waits for `approve` or `deny`.
+- A session with no vend for `CONFIG_VMFLOW_MDB_SESSION_TIMEOUT` seconds (60) is cancelled; a
+  vend still waiting for an answer is denied.
+- On every (re)start the engine answers the first poll with JUST RESET, so a VMC that set the
+  reader up before the reboot runs SETUP and READER ENABLE again.
+- `session_end` carries the funds left unspent.
+- Events go to one reader. Nobody may be reading, so a full queue (16) drops its oldest event.
+
+The bus is bit-banged like the ESP-IDF firmware: each received word is sampled inside the
+falling-edge interrupt (~1.1 ms), and each sent word goes out with interrupts off. The VMC wants
+an answer within 5 ms, so the engine runs at priority 200, replies before it reads its queue or
+posts events, and does not use syslog once it is running: syslog goes to the USB-Serial/JTAG
+console through `up_putc()`, which spins until the host reads the port and would stall the
+engine whenever the console is closed.
+
+Settings live under **Application Configuration → VMflow → MDB cashless engine**: autostart,
+address (cashless #1/#2), currency, scale factor, decimal places and session timeout. The pins
+are board options (`VMFLOW_MDB_RX_GPIO`, `VMFLOW_MDB_TX_GPIO`).
 
 ## SIM7080G (LTE-M / NB-IoT)
 

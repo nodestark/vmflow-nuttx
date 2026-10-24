@@ -2,7 +2,7 @@
  * firmware/apps/vmflow/vmflow_main.c
  *
  * VMflow cashless application entry point (NuttX port of
- * mdb-esp32-cashless). MDB, RPC and BLE are not ported yet.
+ * mdb-esp32-cashless). RPC and BLE are not ported yet; MDB is the mdb app.
  *
  ****************************************************************************/
 

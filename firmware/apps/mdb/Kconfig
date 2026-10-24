@@ -1,0 +1,120 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config VMFLOW_MDB
+	tristate "MDB cashless engine (mdb)"
+	default n
+	depends on !DISABLE_MQUEUE
+	---help---
+		Answers the vending machine as an MDB level 1 cashless device on
+		the bus driver (/dev/mdb0), like mdb_cashless_task() in the
+		ESP-IDF firmware. Any task drives it through a message queue
+		(mdb.h, or the "mdb" command): open a session with credit, let
+		the app approve each vend, cancel, and so on.
+
+if VMFLOW_MDB
+
+config VMFLOW_MDB_PROGNAME
+	string "Program name"
+	default "mdb"
+
+config VMFLOW_MDB_PRIORITY
+	int "Engine task priority"
+	default 200
+	---help---
+		The VMC wants an answer within 5 ms; keep it above the network
+		and modem tasks.
+
+config VMFLOW_MDB_STACKSIZE
+	int "Stack size"
+	default 2048
+
+config VMFLOW_MDB_AUTOSTART
+	bool "Start at boot (nxinit service)"
+	default y
+	depends on SYSTEM_NXINIT
+	---help---
+		Run "mdb" as an nxinit service from /etc/init.d/init.rc.
+
+config VMFLOW_MDB_DEVPATH
+	string "MDB bus device"
+	default "/dev/mdb0"
+
+choice
+	prompt "Peripheral address"
+	default VMFLOW_MDB_CASHLESS_1
+
+config VMFLOW_MDB_CASHLESS_1
+	bool "Cashless device #1 (0x10)"
+
+config VMFLOW_MDB_CASHLESS_2
+	bool "Cashless device #2 (0x60)"
+
+endchoice
+
+config VMFLOW_MDB_ADDRESS
+	int
+	default 16 if VMFLOW_MDB_CASHLESS_1
+	default 96 if VMFLOW_MDB_CASHLESS_2
+
+choice
+	prompt "Country / currency code"
+	default VMFLOW_MDB_CURRENCY_UNKNOWN
+
+config VMFLOW_MDB_CURRENCY_EUR
+	bool "EUR - 0x1978"
+
+config VMFLOW_MDB_CURRENCY_USD
+	bool "USD - 0x1840"
+
+config VMFLOW_MDB_CURRENCY_BRL
+	bool "BRL - 0x1986"
+
+config VMFLOW_MDB_CURRENCY_UNKNOWN
+	bool "Unknown - 0xffff"
+
+endchoice
+
+config VMFLOW_MDB_CURRENCY_CODE
+	int
+	default 6520 if VMFLOW_MDB_CURRENCY_EUR
+	default 6208 if VMFLOW_MDB_CURRENCY_USD
+	default 6534 if VMFLOW_MDB_CURRENCY_BRL
+	default 65535 if VMFLOW_MDB_CURRENCY_UNKNOWN
+
+choice
+	prompt "Scale factor"
+	default VMFLOW_MDB_SCALE_1
+
+config VMFLOW_MDB_SCALE_1
+	bool "1"
+
+config VMFLOW_MDB_SCALE_10
+	bool "10"
+
+config VMFLOW_MDB_SCALE_100
+	bool "100"
+
+endchoice
+
+config VMFLOW_MDB_SCALE_FACTOR
+	int
+	default 1 if VMFLOW_MDB_SCALE_1
+	default 10 if VMFLOW_MDB_SCALE_10
+	default 100 if VMFLOW_MDB_SCALE_100
+
+config VMFLOW_MDB_DECIMAL_PLACES
+	int "Decimal places"
+	default 2
+	range 0 3
+
+config VMFLOW_MDB_SESSION_TIMEOUT
+	int "Session timeout (s)"
+	default 60
+	---help---
+		A session with no vend for this long is cancelled (a vend still
+		waiting for approve/deny is denied).
+
+endif

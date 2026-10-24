@@ -24,6 +24,11 @@ service mqtt vmflow mqtt
    restart_period 5000
 #endif
 
+#ifdef CONFIG_VMFLOW_MDB_AUTOSTART
+service mdb mdb
+   restart_period 1000
+#endif
+
 on init
 #ifdef CONFIG_SYSTEM_NSH
    start console
@@ -33,4 +38,7 @@ on init
 #endif
 #ifdef CONFIG_VMFLOW_MQTT_AUTOSTART
    start mqtt
+#endif
+#ifdef CONFIG_VMFLOW_MDB_AUTOSTART
+   start mdb
 #endif
