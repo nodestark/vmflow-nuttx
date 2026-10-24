@@ -94,10 +94,11 @@ the final reset; replug the board or press RESET.
 Flashing and the console share the chip's native USB port (GPIO19/20), which shows up as
 `303a:1001` Espressif USB JTAG/serial in both download mode and while NuttX runs.
 
-On the USB-Serial/JTAG, DTR and RTS drive the chip's BOOT and RESET lines. `make monitor`
-keeps both low; a terminal that asserts them on open holds the chip in reset or drops it
-into download mode. Linux may still pulse them when the port opens, which resets the board;
-the modem service comes back up on its own.
+On the USB-Serial/JTAG, DTR and RTS drive the chip's BOOT and RESET lines: RTS high with
+DTR low resets the chip, DTR high with RTS low pulls BOOT low. Linux raises both when the
+port opens, which is harmless, so `make monitor` leaves them there. A terminal that then
+drops DTR before RTS (miniterm's `--dtr 0 --rts 0`) passes through the reset state and
+reboots the board on every open.
 
 ### USB-OTG console (`vmflow-otg`)
 

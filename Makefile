@@ -47,10 +47,12 @@ build: apps/external nuttx/.config
 flash:
 	$(DOCKER_RUN) $(DEVICE) $(IMAGE) make flash ESPTOOL_PORT=$(PORT)
 
-# DTR/RTS low: on the USB-Serial/JTAG they drive the chip's BOOT and RESET lines.
+# On the USB-Serial/JTAG, DTR and RTS drive the chip's BOOT and RESET lines, and RTS high with
+# DTR low resets it. The port opens with both high; dropping DTR before RTS (miniterm's order
+# with --dtr 0 --rts 0) passes through that state, so leave both as the open set them.
 
 monitor:
-	$(DOCKER_RUN) $(DEVICE) $(IMAGE) python3 -m serial.tools.miniterm --raw --dtr 0 --rts 0 $(PORT) $(BAUD)
+	$(DOCKER_RUN) $(DEVICE) $(IMAGE) python3 -m serial.tools.miniterm --raw $(PORT) $(BAUD)
 
 menuconfig: nuttx/.config
 	$(DOCKER_RUN) $(IMAGE) make menuconfig
