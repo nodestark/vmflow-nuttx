@@ -36,6 +36,8 @@ apps/external:
 configure: apps/external
 	@# A stale config whose Make.defs link points nowhere breaks `-E` (distclean)
 	@test -e nuttx/Make.defs || rm -f nuttx/.config nuttx/Make.defs
+	@# firmware/apps/Kconfig is generated once; regenerate it so new apps show up
+	$(DOCKER_RUN) -w /work/apps/external $(IMAGE) /work/apps/tools/mkkconfig.sh -m VMflow
 	$(DOCKER_RUN) $(IMAGE) ./tools/configure.sh -E -l ../$(BOARD_DIR)/configs/$(CONFIG)
 
 nuttx/.config:
