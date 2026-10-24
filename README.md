@@ -15,10 +15,10 @@ firmware for the ESP32-S3.
 > (USB-Serial/JTAG). The SIM7080G comes up as a regular network interface (`ppp0`) through
 > pppd, so sockets, DNS and HTTP go over LTE-M/NB-IoT. The `mdb` engine answers the vending
 > machine as an MDB cashless device, and any task opens sessions and approves vends through it.
-> The `vmflow` application keeps an MQTT session with the VMflow broker (status, last will,
-> subscription); Wi-Fi, the signed RPC handler (so `credit` from the backend), BLE provisioning
-> and OTA from the ESP-IDF firmware are not ported yet. The WS2812 status LED works through the
-> `rgbled` command, and `dex` prints the machine's EVA-DTS audit.
+> The `vmflow` orchestrator ties them to the VMflow backend (signed MQTT RPC: credit, dex, info,
+> ...; sales) and to the phone app over BLE (provisioning, app sessions, vend notifications).
+> The WS2812 status LED and the buzzer follow the ESP-IDF firmware, and `dex` reads the
+> machine's EVA-DTS audit. Not ported: Wi-Fi, OTA and the PAX counter.
 
 ![MDB ESP32-S3 SIM7080G board](docs/mdb-slave-esp32s3-sim7080g_pcb_v2.jpg)
 
@@ -39,7 +39,7 @@ Related projects:
 ├── apps/                     apache/nuttx-apps (submodule, nuttx-13.1.0)
 ├── firmware/
 │   ├── apps/                 VMflow applications, linked as apps/external
-│   │   ├── vmflow/           cashless application (`vmflow` NSH command), MQTT client
+│   │   ├── vmflow/           orchestrator: MQTT RPC, BLE (NimBLE), LED, buzzer
 │   │   ├── mdb/              MDB cashless engine and its client API (`mdb` command, mdb.h)
 │   │   ├── sim7080g/         modem daemon: power, pppd, link supervision
 │   │   ├── rgbled/           `rgbled` command for the WS2812 status LED
@@ -139,12 +139,13 @@ owner:
 
 ```
 nsh> mdb status
-engine  : pid 7, up 53 s, /dev/mdb0, address 0x10
+engine  : pid 7, up 53 s, /dev/mdb0, address 0x10, watchdog on
 state   : idle, vmc level 2
-session : funds 100, 16 s
-pending : credit 50
-bus     : 638 words, 274 frames for us, 0 bad
+session : funds 100, 16 s, idle 16 s
+pending : credit 50, 14 s
+bus     : 638 words, 274 frames for us, 0 bad, last 0 s ago, lost 0
 totals  : sessions 1, vends 0, failed 0, cash 0
+timeouts: approve 0, credits expired 0 (session 60 s, approve 8 s, bus 5 s, credit 120 s)
 currency: 0xffff, scale 1, decimals 2 (amounts in cents)
 nsh> mdb events 30
 state idle
@@ -157,7 +158,7 @@ session_end price 1.00 item 0
 |---------|-----|
 | `mdb` | run the engine in the foreground (what init does) |
 | `mdb start` | spawn it in the background, when autostart is off |
-| `mdb status` | reader state, session, pending credit, bus counters |
+| `mdb status` | reader state, session, the vend waiting for an answer, pending credit, bus counters |
 | `mdb credit <amount>` | begin a session with that much credit (`1`, `1.5`, `1,50`) |
 | `mdb open` | begin a session where every vend waits for `approve`/`deny` (app flow) |
 | `mdb close` | cancel the session; with none open, drop the pending credit |
@@ -167,7 +168,17 @@ session_end price 1.00 item 0
 
 From C, include `mdb.h` (`CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/external/mdb`) and call
 `mdb_request(MDB_CMD_SESSION_OPEN, 100)`; amounts are in cents, converted to the MDB scale
-factor by the engine. Events (`struct mdb_evt_s`) come from `mq_receive()` on `MDB_EVT_MQ`.
+factor by the engine. The header is the whole client (the queues and structs are the contract),
+so an app builds and runs whether the engine is configured or not; without it every call fails
+with `ENOENT`.
+
+Each process that wants events calls `mdb_subscribe()`: it creates `/mdb_evt.<pid>` and asks
+the engine to copy every event there. The engine answers with a `snapshot` (state and session
+funds), so a late or restarted client needs no history, then sends events as they happen.
+Up to 4 subscribers; one whose queue is full misses events (counted as `dropped` in
+`mdb status`), and one that exits is dropped. The engine forgets its subscribers when it
+restarts, so a long-running client renews (`MDB_CMD_SUBSCRIBE` again) when its queue has been
+quiet for a few seconds; each renewal is answered with a new snapshot.
 
 How the engine behaves:
 
@@ -176,22 +187,35 @@ How the engine behaves:
 - With credit, the engine approves a vend that fits the funds and denies one that does not;
   a failed vend gives the price back to the funds. An `open` session has no funds: each vend
   waits for `approve` or `deny`.
-- A session with no vend for `CONFIG_VMFLOW_MDB_SESSION_TIMEOUT` seconds (60) is cancelled; a
-  vend still waiting for an answer is denied.
 - On every (re)start the engine answers the first poll with JUST RESET, so a VMC that set the
   reader up before the reboot runs SETUP and READER ENABLE again.
 - `session_end` carries the funds left unspent.
 - Events go to one reader. Nobody may be reading, so a full queue (16) drops its oldest event.
 
+Nothing waits forever, so neither the machine nor the engine stays stuck:
+
+| Timeout | Default | What happens |
+|---------|---------|--------------|
+| `SESSION_TIMEOUT` | 60 s | a session with no vend activity is cancelled; each vend request and outcome restarts the count |
+| `APPROVE_TIMEOUT` | 8 s | a vend in an `open` session with no `approve`/`deny` is denied |
+| `RESPONSE_TIME` | 10 s | reported to the VMC in SETUP as the reader's maximum response time (ESP-IDF: 3 s); keep it above `APPROVE_TIMEOUT` |
+| `BUS_TIMEOUT` | 5 s | no frame for the reader (machine off, cable out): the session ends (`session_end`, `bus_lost`), the reader drops to inactive and answers the VMC's next poll with JUST RESET |
+| `CREDIT_TIMEOUT` | 120 s | a credit that found no session is dropped (`credit_expired`, so the sender can give it back); each new credit restarts the count |
+| word gap | 20 ms | a word missing in the middle of a frame drops the frame instead of blocking on it |
+| `WATCHDOG_TIMEOUT` | 10 s | the engine feeds MWDT0 (`/dev/watchdog0`) at least once a second; if it stops and init does not bring it back in time, the board resets |
+
+`mdb status` shows the running timers (session idle time, vend wait, pending age, last frame) and
+how often each timeout fired.
+
 The bus is bit-banged like the ESP-IDF firmware: each received word is sampled inside the
 falling-edge interrupt (~1.1 ms), and each sent word goes out with interrupts off. The VMC wants
 an answer within 5 ms, so the engine runs at priority 200, replies before it reads its queue or
-posts events, and does not use syslog once it is running: syslog goes to the USB-Serial/JTAG
-console through `up_putc()`, which spins until the host reads the port and would stall the
-engine whenever the console is closed.
+posts events, and does not log on the bus path (what happens goes to the event queues and
+`mdb status`).
 
 Settings live under **Application Configuration → VMflow → MDB cashless engine**: autostart,
-address (cashless #1/#2), currency, scale factor, decimal places and session timeout. The pins
+address (cashless #1/#2), currency, scale factor, decimal places, the timeouts above and the
+watchdog. The pins
 are board options (`VMFLOW_MDB_RX_GPIO`, `VMFLOW_MDB_TX_GPIO`).
 
 ## SIM7080G (LTE-M / NB-IoT)
@@ -259,8 +283,8 @@ Notes:
   submodule stays untouched.
 - `ppp0` MTU is 1024 (`CONFIG_NET_TUN_PKTSIZE`), matching pppd's 1024-byte buffers.
 - pppd echoes the chat dialogue to the console; that output is hardwired in pppd.
-- `kill` cannot stop the daemon: without `CONFIG_SIG_DEFAULT` NuttX ignores signals that
-  have no handler.
+- `kill` stops the daemon (`CONFIG_SIG_DEFAULT`, needed by NimBLE), and init starts it again
+  5 s later.
 - No CMUX: while PPP is up the modem takes no AT commands, same as the ESP-IDF firmware.
 - pppd drops the link after sending `AHDLC_TX_OFFLINE` frames with nothing received. Upstream
   uses 5, which a few back-to-back TCP segments hit within one LTE-M round trip;
@@ -269,10 +293,41 @@ Notes:
 - TCP write buffers are on (`NET_TCP_WRITE_BUFFERS`, 64 IOBs). Without them every segment
   waits for its ACK and a non-blocking `send()` returns `EAGAIN`, which MQTT-C spins on.
 
-## MQTT
+## VMflow orchestrator
 
-`vmflow mqtt` is the MQTT client ([MQTT-C](https://github.com/LiamBindle/MQTT-C), plain TCP),
-set up like the esp-mqtt client of the ESP-IDF firmware:
+`vmflow` ties the backend and the phone app to the rest of the system, as the ESP-IDF firmware's
+main loop does. It owns no hardware and only uses public interfaces, so it is optional: without
+it the MDB engine, the modem and `dex` keep working.
+
+```
+ MQTT (mqtt.vmflow.xyz)          BLE (phone app)
+            \                     /
+              vmflow  (nxinit service)
+   ┌──────────┬────────┴───┬──────────────┬──────────────┐
+ mdb.h      "dex" command   /dev/gpio0     /dev/leds0     /data/vmflow/*
+ (engine)   stdout -> file  (buzzer)       (status LED)   (identity)
+```
+
+### Identity
+
+`subdomain` (the numeric device id, `<subdomain>.vmflow.xyz`) and `passkey` (RPC and BLE
+signing key) are plain files on the LittleFS partition mounted at `/data`, in place of NVS:
+
+```
+nsh> mkdir /data/vmflow
+nsh> echo 123 > /data/vmflow/subdomain
+nsh> echo <passkey> > /data/vmflow/passkey
+```
+
+They are read whenever needed, so provisioning takes effect without a restart. The phone app
+can also provision them over BLE, which, like the ESP-IDF firmware, only writes a value that is
+not set yet. Until both exist the LED is white and MQTT does not connect. The passkey sits in
+plain text on the flash, as in the ESP-IDF firmware's unencrypted NVS.
+
+### MQTT
+
+[MQTT-C](https://github.com/LiamBindle/MQTT-C) over plain TCP, set up like esp-mqtt in the
+ESP-IDF firmware:
 
 | | |
 |-|-|
@@ -282,44 +337,108 @@ set up like the esp-mqtt client of the ESP-IDF firmware:
 | on connect | publishes `online` (QoS 1, retained) there and subscribes `<subdomain>.vmflow.xyz/#` |
 | reconnect | every 15 s; DNS or connect fail while `ppp0` is down, so it just waits for the link |
 
-The device id (`<subdomain>`) is a build option for now: the ESP-IDF firmware gets it over BLE
-and keeps it in NVS. With it empty (the default) the client does not start.
-
-```bash
-make menuconfig    # Application Configuration → VMflow → Device subdomain
-make build flash
-```
-
-```
-nsh> vmflow mqtt status
-client  : pid 7, device 123
-broker  : mqtt.vmflow.xyz:1883, keepalive 120 s
-state   : connected for 56 s
-sessions: 1, failed attempts: 1
-messages: rx 5, tx 6, late acks 0
-nsh> vmflow mqtt pub domain.vmflow.xyz/123/test hello 1
-```
-
-| Command | Use |
-|---------|-----|
-| `vmflow mqtt` | run the client in the foreground (what init does) |
-| `vmflow mqtt start` | spawn it in the background, when autostart is off |
-| `vmflow mqtt status` | session state and counters |
-| `vmflow mqtt pub <topic> <msg> [qos] [retain]` | publish through the running session |
-
-With a subdomain set, `CONFIG_VMFLOW_MQTT_AUTOSTART` (default on) adds the client to
-`init.rc` next to the modem service. Incoming messages are only logged to syslog until the
-RPC handler (`<cmd>:<params>:<ts>:<hmac>`) is ported. The broker ACL only lets anonymous
-clients use `+/rpc`, `+/credit` and `domain.vmflow.xyz/#`.
-
 LTE-M has stalls of several seconds (and occasionally tens). MQTT-C resends any request still
 unacknowledged after 30 s, so both acks may come back; the second one matches nothing and MQTT-C
 reports `MQTT_ERROR_ACK_OF_UNKNOWN`, which would end the session. The client drops that error and
 counts it as `late acks`.
 
-Settings live under **Application Configuration → VMflow** (`make menuconfig`): broker host and
-port, keepalive, reconnect interval and buffer sizes. The send buffer (6 KB) holds every message
-until it is acknowledged; DEX audit dumps reach ~4 KB.
+### RPC
+
+Signed commands on `<subdomain>.vmflow.xyz/rpc`, same wire format as the ESP-IDF firmware
+(and `mdb-slave-esp32s3/tools/rpc.sh` there):
+
+```
+<cmd>:<args>:<ts>:<hmac>      hmac = HMAC-SHA256(passkey, "<cmd>:<args>:<ts>"), lowercase hex
+```
+
+`ts` must be within 10 s of the device clock, so nothing is accepted until NTP has set it.
+Commands without an argument send `-`.
+
+| Command | Action | Reply |
+|---------|--------|-------|
+| `credit:<cents>` | MDB session with that credit (`mdb_request`), beep | `.../rpc/confirm` `ok` |
+| `oos:-` | "command out of sequence" on the next poll | `.../rpc/confirm` `ok` |
+| `dex:-` | runs `dex`, publishes its stdout | `.../rpc/confirm` `ok`, then `.../rpc/dex` |
+| `info:-` | device snapshot JSON (version, uptime, heap, `machine_state`, last sale, `ip_ppp`) | `.../rpc/info` |
+| `echo:-` | liveness / RTT | `.../rpc/echo` `<ts>` |
+| `buzzer:-` | 1 s beep | `.../rpc/confirm` `ok` |
+| `restart:-` | reboot after the ack is out | `.../rpc/confirm` `ok` |
+
+Reply topics are under `domain.vmflow.xyz/<subdomain>/`. `ota` is not ported. A `dex` with no
+answer from the machine publishes nothing, as in the ESP-IDF firmware.
+
+### Events published
+
+From the engine's events, signed (`<msg>:<hmac>`) on `domain.vmflow.xyz/<subdomain>/...`, QoS 1:
+
+| Event | Topic | Message |
+|-------|-------|---------|
+| `cash_sale` | `sale` | `<cents>:<item>:<ts>` |
+| `vend_failure` | `vend_fail` | `<cents>,<item>:<ts>` |
+
+As in the ESP-IDF firmware, cashless sales are not published here: the app reports them from
+the BLE notifications.
+
+### BLE
+
+NimBLE peripheral over the HCI socket (NimBLE is built into `vmflow`), same GATT service and
+characteristic as the ESP-IDF firmware (`b2bbc642-46da-11ed-b878-0242ac120002` /
+`c9af9c76-46de-11ed-b878-0242ac120002`, read/write/notify). It advertises as
+`<subdomain>.vmflow.xyz` (`0.vmflow.xyz` until installed).
+
+| Write | Action |
+|-------|--------|
+| `00 <subdomain>` | provisioning, only while none is set |
+| `01 <passkey>` | provisioning, only while none is set |
+| `02` | MDB session with no fixed funds (every vend waits for an approval) |
+| `03 <19-byte payload>` | approve the vend, signed and no older than 60 s |
+| `04` | cancel the session |
+
+Notifications (19 bytes: `cmd, price u32, item u16, time u32, 0 u32, HMAC[:4]`, big endian,
+price in cents, HMAC-SHA256 with the passkey over the first 15 bytes): `0a` vend request, `0b`
+vend success, `0c` vend failure, `0d` session complete. Wi-Fi provisioning (`06`/`07`) and the
+PAX counter are not ported.
+
+The BLE controller's network interface (`bnep0`) must be up for the HCI socket to carry
+anything; `vmflow` brings it up before starting NimBLE.
+
+### Status LED and buzzer
+
+| LED | Meaning |
+|-----|---------|
+| white | not installed (no subdomain/passkey) |
+| green | MQTT connected and the VMC has the reader enabled |
+| magenta | MQTT only |
+| blue | MDB only |
+| red | neither |
+
+The buzzer is GPIO12 through the NuttX GPIO driver, `/dev/gpio0` (`gpio -o 1 /dev/gpio0`);
+`vmflow` beeps 1 s on `credit` and `buzzer`.
+
+### Commands
+
+```
+nsh> vmflow status
+vmflow  : NuttX 0.0.0, build 2b5c0de5 Oct 24 2026 16:15:13
+daemon  : pid 11, device 123
+machine : enabled, last sale item 0 price 0, 0 failed vends
+mqtt    : connected for 44 s, broker mqtt.vmflow.xyz:1883
+sessions: 1, failed attempts: 1
+messages: rx 2, tx 3, late acks 0
+ble     : advertising, name 123.vmflow.xyz, no connection
+```
+
+| Command | Use |
+|---------|-----|
+| `vmflow` | run it in the foreground (what init does) |
+| `vmflow start` | spawn it in the background, when autostart is off |
+| `vmflow status` | identity, machine view, MQTT and BLE state |
+| `vmflow pub <topic> <msg> [qos] [retain]` | publish through the running session |
+
+Settings live under **Application Configuration → VMflow → VMflow orchestrator**: autostart,
+identity directory, device paths, the `dex` command, broker, buffers and BLE. The MQTT send
+buffer (10 KB) holds every message until it is acknowledged, so a DEX audit goes out whole up to
+that size.
 
 ## RGB LED
 
@@ -372,6 +491,28 @@ Differences from the ESP-IDF version:
 
 Settings live under **Application Configuration → VMflow → EVA-DTS audit reader**: serial device
 and audit buffer size (8 KB).
+
+## System services
+
+Configured in the board's defconfig, used by the applications above:
+
+| | |
+|-|-|
+| `/data` | LittleFS on the SPI flash (1 MB at 0x180000), formatted on first boot |
+| NTP | `ntpcstart` from `init.rc`; polls `pool.ntp.org` over `ppp0` once the link is up |
+| syslog | RAM buffer, read with `dmesg` (the USB-Serial/JTAG console has no low-level output, so the default channel showed nothing) |
+| watchdog | MWDT0 (`/dev/watchdog0`), started and fed by the MDB engine |
+| assert | a crash in an interrupt or kernel thread reboots at once (`BOARD_RESET_ON_ASSERT=1`); an asserting task is killed and init restarts it |
+
+Known issues:
+
+- After a reset by the hardware watchdog (`TG0WDT_SYS_RST`) the USB-Serial/JTAG console does not
+  come back until a reset from esptool (`make flash`, or `esptool chip-id`). Software resets
+  (`reboot`, the `restart` RPC, crashes) are not affected.
+- `board_rmt_txinitialize() failed: -19` in `dmesg` is spurious: the NuttX function returns an
+  uninitialized value when `DRIVERS_RC` is off. `/dev/leds0` is registered.
+- `ntpcstatus` and the NTP daemon overflow the default 2 KB stack (a 1 KB host name buffer);
+  both stacks are set to 4 KB.
 
 ## Configuration
 
