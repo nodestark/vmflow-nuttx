@@ -18,6 +18,10 @@ firmware for the ESP32-S3.
 > handler, BLE provisioning and OTA from the ESP-IDF firmware are not ported yet. The WS2812
 > status LED works through the `rgbled` command, and `dex` prints the machine's EVA-DTS audit.
 
+![MDB ESP32-S3 SIM7080G board](docs/mdb-slave-esp32s3-sim7080g_pcb_v2.jpg)
+
+[![PCBWay](https://www.pcbway.com/project/img/images/frompcbway-1220.png)](https://www.pcbway.com/project/shareproject/MDB_ESP32_GPS_LTE_M_NB_IoT_Cashless_Device_05cc1976.html)
+
 Related projects:
 
 - [mdb-esp32-cashless](https://github.com/nodestark/mdb-esp32-cashless): the ESP-IDF
@@ -42,6 +46,7 @@ Related projects:
 │       └── configs/
 │           ├── vmflow/       default: NSH on USB-Serial/JTAG, SIM7080G + PPP
 │           └── vmflow-otg/   alternative: NSH on USB-OTG CDC-ACM
+├── docs/                     board photo
 ├── docker/Dockerfile         build environment (xtensa-esp-elf 14.2.0, esptool 5.2.0, kconfig)
 └── Makefile                  build, flash and monitor through Docker
 ```
