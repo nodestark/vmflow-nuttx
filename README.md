@@ -39,21 +39,133 @@ Related projects:
 ├── apps/                     apache/nuttx-apps (submodule, nuttx-13.1.0)
 ├── firmware/
 │   ├── apps/                 VMflow applications, linked as apps/external
+│   │   ├── include/          header-only helpers shared by the apps (daemon_status.h)
 │   │   ├── vmflow/           orchestrator: MQTT RPC, BLE (NimBLE), LED, buzzer
 │   │   ├── mdb/              MDB cashless engine and its client API (`mdb` command, mdb.h)
 │   │   ├── sim7080g/         modem daemon: power, pppd, link supervision
 │   │   ├── rgbled/           `rgbled` command for the WS2812 status LED
 │   │   └── dex/              `dex` command: EVA-DTS audit over DDCMP or DEX/UCS
 │   └── boards/vmflow-esp32s3/
-│       ├── src/              board code (derived from esp32s3-devkit), PWRKEY GPIO, RGB LED,
-│       │                     MDB bus driver
+│       ├── src/              board code (derived from esp32s3-devkit): bring-up, GPIOs,
+│       │                     MDB bus driver, init.rc
 │       └── configs/
-│           ├── vmflow/       default: NSH on USB-Serial/JTAG, SIM7080G + PPP
+│           ├── vmflow/       default: NSH on USB-Serial/JTAG, SIM7080G + PPP, MDB, BLE
 │           └── vmflow-otg/   alternative: NSH on USB-OTG CDC-ACM
 ├── docs/                     board photo
 ├── docker/Dockerfile         build environment (xtensa-esp-elf 14.2.0, esptool 5.2.0, kconfig)
 └── Makefile                  build, flash and monitor through Docker
 ```
+
+## Architecture
+
+The firmware is split the way a Linux system would be: drivers own the hardware, daemons own a
+protocol each, and an optional orchestrator ties them to the outside world. Every piece talks
+to the next one through a POSIX interface (a device file, a message queue, a socket, a file or a
+command), never through another task's memory, so each runs, restarts and is tested on its own.
+
+```
+ Control path
+
+                  VMflow backend (MQTT)       phone app (BLE)
+                            │                       │
+              ┌─────────────┴───────────────────────┴─────────────┐
+              │ vmflow (optional orchestrator)                    │
+              └──┬────────────┬─────────────┬─────────────┬───────┘
+                 │ mdb.h      │ runs "dex"  │ /dev/gpio0  │ /dev/leds0
+                 │ (mqueues)  │ (stdout)    │ (buzzer)    │ (status LED)
+          ┌──────┴─────┐  ┌───┴───┐
+          │ mdb engine │  │  dex  │
+          └──────┬─────┘  └───┬───┘
+                 │ /dev/mdb0  │ /dev/ttyS2
+                 │            │
+           VMC (MDB bus)   VMC (DEX port)
+
+ Network path
+
+   vmflow (MQTT), ntpc ── sockets ── ppp0 ── pppd ── /dev/ttyS1 ── SIM7080G
+                                               └── sim7080g daemon: power (/dev/gpio1),
+                                                   link supervision
+   vmflow (NimBLE)     ── HCI socket ── bnep0 ── BLE controller
+```
+
+### Components
+
+| Component | Kind | Owns | Interface to the rest |
+|-----------|------|------|-----------------------|
+| `/dev/mdb0` | board driver | GPIO4/5, MDB 9-bit at 9600 baud | `read`/`write` of `uint16_t` words, `poll` |
+| `mdb` | daemon (nxinit) | the MDB bus, reader state, session timers | `mdb.h`: `/mdb_cmd` queue in, `/mdb_evt.<pid>` queues out; `mdb` command |
+| `sim7080g` | daemon (nxinit) | modem power, `pppd`, link supervision | the `ppp0` network interface; applications just open sockets |
+| `ntpc` | NuttX service | wall clock | `time()` |
+| `dex` | command | DEX port (`/dev/ttyS2`) for one read | stdout (the audit), `/tmp/dex.lock` |
+| `vmflow` | daemon (nxinit), optional | the MQTT session, the BLE GATT service | MQTT and BLE outside; `mdb.h`, `dex`, `/dev/gpio0`, `/dev/leds0`, `/data/vmflow` inside |
+| `rgbled` | command | — | writes `/dev/leds0` |
+
+### Boot
+
+1. `esp32s3_bringup()`: procfs, tmpfs at `/tmp`, LittleFS at `/data`, GPIOs (`/dev/gpio0`,
+   `/dev/gpio1`), RMT and WS2812 (`/dev/leds0`), BLE controller, MDB driver (`/dev/mdb0`),
+   watchdog (`/dev/watchdog0`).
+2. nxinit runs `/etc/init.d/init.rc`: console (`sh`), `ntpc`, `sim7080g`, `mdb`, `vmflow`.
+   Services are restarted when they exit (1 s for `mdb`, 5 s for the others).
+3. Each service waits for what it needs on its own: `vmflow` for its identity files and the
+   network, `ntpc` and MQTT for `ppp0`, the engine for the VMC (and answers its first poll
+   with JUST RESET, so a VMC that already knew the reader sets it up again).
+
+### Tasks
+
+| Task | Priority | Stack | Notes |
+|------|---------:|------:|-------|
+| `btController` | 253 | 4 KB | BLE controller (kernel) |
+| `esp_timer` | 252 | 4.5 KB | high-resolution timer (kernel) |
+| `hpwork` | 224 | 2 KB | high-priority work queue (kernel) |
+| `mdb` | 200 | 4 KB | answers the VMC within 5 ms; feeds the watchdog |
+| `sim7080g`, `pppd` | 100 | 4 KB | modem and PPP |
+| `NTP_daemon` | 100 | 4 KB | |
+| `vmflow` | 100 | 4 KB | MQTT session |
+| `vmflow_mdb`, `vmflow_status`, `vmflow_ble`, `vmflow_hci` | 100 | 3–4 KB | engine events, status file, NimBLE host and HCI socket |
+
+`ps` shows the stack use of each task (stack coloration is on). About 155 KB of heap stay free.
+
+### Files and queues
+
+| Path | Writer | Readers | Content |
+|------|--------|---------|---------|
+| `/data/vmflow/subdomain`, `passkey` | you (`echo`), BLE provisioning | `vmflow` | device identity, persistent |
+| `/tmp/<daemon>.status` | `mdb`, `sim7080g`, `vmflow`, once a second | `<daemon> status`, anyone | pid, then the status lines |
+| `/tmp/dex.lock` | `dex` while reading | `dex` | pid of the reader |
+| `/mdb_cmd` (mqueue) | any client (`mdb_request()`) | engine | commands |
+| `/mdb_evt.<pid>` (mqueue) | engine | that subscriber | events, starting with a snapshot |
+| `dmesg` (RAM log) | everyone (`syslog`) | `dmesg` | logs |
+
+### Pins
+
+| GPIO | Use |
+|------|-----|
+| 4 / 5 | MDB RX / TX (`/dev/mdb0`) |
+| 8 / 9 | DEX RX / TX, UART2 (`/dev/ttyS2`) |
+| 12 | buzzer (`/dev/gpio0`) |
+| 14 | SIM7080G PWRKEY (`/dev/gpio1`) |
+| 17 / 18 | SIM7080G TX / RX, UART1 (`/dev/ttyS1`) |
+| 19 / 20 | USB-Serial/JTAG: console and flashing |
+| 21 | WS2812 status LED (RMT, `/dev/leds0`) |
+
+### Design rules
+
+- **One owner per resource.** The bus belongs to the engine, the modem to `sim7080g`, the DEX
+  port to the `dex` running now. Others ask through the owner's interface.
+- **No shared memory between tasks.** Commands and events go through message queues, status
+  through files, the network through sockets. Nothing relies on a flat build.
+- **Clients are headers.** `mdb.h` and `daemon_status.h` hold the whole client side, so an
+  app builds whether the service it talks to is configured or not, and fails at run time with
+  `ENOENT` / "not running" when it is absent.
+- **Nothing waits forever.** Every wait has a timeout (sessions, approvals, bus silence,
+  pending credit, words within a frame, network retries), and the engine feeds a hardware
+  watchdog.
+- **The orchestrator is optional.** Without `vmflow` the machine still vends, the engine still
+  protects itself, and credit can still be given from the shell (`mdb credit 1.00`).
+- **Standard NuttX pieces first.** GPIO, WS2812, watchdog and BLE drivers, `pppd`,
+  `ntpclient`, MQTT-C and NimBLE come from NuttX and nuttx-apps; the sources pass
+  `tools/nxstyle`.
 
 ## Build
 
@@ -90,11 +202,11 @@ make monitor             # NSH console, exit with Ctrl+] (close it before flashi
 ```
 
 ```
-nsh> vmflow
-VMflow on NuttX 13.1.0 (xtensa)
-build: 2b5c0de5 Oct 23 2026 13:11:50
 nsh> uname -a
-NuttX 13.1.0 2b5c0de5 Oct 23 2026 13:11:50 xtensa esp32s3-devkit
+NuttX 13.1.0 2b5c0de5 Oct 23 2026 13:11:50 xtensa vmflow-esp32s3
+nsh> ps                      # init.rc started ntpc, sim7080g, mdb and vmflow
+nsh> mdb status
+nsh> vmflow status
 ```
 
 If the console stays silent after `make flash`, the chip did not leave download mode on
