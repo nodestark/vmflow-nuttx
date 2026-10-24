@@ -23,7 +23,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
-#include <pthread.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -60,13 +60,49 @@
  * Private Data
  ****************************************************************************/
 
-/* Held for the whole read. NuttX flat builds share an application's
- * static data between invocations, so this also guards g_audit. Robust:
- * if a dex dies holding it, the next one takes it over.
+/* DDCMP control sequences */
+
+static const uint8_t g_enq[]     =
+{
+  ENQ
+};
+
+static const uint8_t g_eot[]     =
+{
+  EOT
+};
+
+static const uint8_t g_dle0[]    =
+{
+  DLE, '0'
+};
+
+static const uint8_t g_dle1[]    =
+{
+  DLE, '1'
+};
+
+static const uint8_t g_dle_soh[] =
+{
+  DLE, SOH
+};
+
+static const uint8_t g_dle_stx[] =
+{
+  DLE, STX
+};
+
+static const uint8_t g_dle_etx[] =
+{
+  DLE, ETX
+};
+
+/* Held for the whole read: a lock file with the holder's pid, the serial
+ * port lock convention (/var/lock/LCK..<tty> on Linux). A lock left by a
+ * dex that died is taken over.
  */
 
-static pthread_mutex_t g_lock;
-static pthread_once_t g_lock_once = PTHREAD_ONCE_INIT;
+#define LOCK_FILE CONFIG_LIBC_TMPDIR "/dex.lock"
 
 static int g_fd = -1;
 
@@ -78,30 +114,56 @@ static bool g_truncated;
  * Private Functions
  ****************************************************************************/
 
-static void lock_init(void)
-{
-  pthread_mutexattr_t attr;
-
-  pthread_mutexattr_init(&attr);
-  pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
-  pthread_mutex_init(&g_lock, &attr);
-  pthread_mutexattr_destroy(&attr);
-}
-
 static bool lock_take(void)
 {
-  int ret;
+  char buf[16];
+  ssize_t n;
+  pid_t pid;
+  int fd;
+  int i;
 
-  pthread_once(&g_lock_once, lock_init);
-
-  ret = pthread_mutex_trylock(&g_lock);
-  if (ret == EOWNERDEAD)
+  for (i = 0; i < 2; i++)
     {
-      pthread_mutex_consistent(&g_lock);
-      ret = OK;
+      fd = open(LOCK_FILE, O_WRONLY | O_CREAT | O_EXCL, 0644);
+      if (fd >= 0)
+        {
+          n = snprintf(buf, sizeof(buf), "%d\n", (int)getpid());
+          write(fd, buf, n);
+          close(fd);
+          return true;
+        }
+
+      if (errno != EEXIST)
+        {
+          return false;
+        }
+
+      /* Held: by a running dex, or left by one that died */
+
+      pid = 0;
+      fd  = open(LOCK_FILE, O_RDONLY);
+      if (fd >= 0)
+        {
+          n = read(fd, buf, sizeof(buf) - 1);
+          close(fd);
+          buf[n > 0 ? n : 0] = '\0';
+          pid = atoi(buf);
+        }
+
+      if (pid > 0 && kill(pid, 0) == 0)
+        {
+          return false;
+        }
+
+      unlink(LOCK_FILE);
     }
 
-  return ret == OK;
+  return false;
+}
+
+static void lock_give(void)
+{
+  unlink(LOCK_FILE);
 }
 
 static void audit_put(FAR const uint8_t *data, size_t len)
@@ -451,8 +513,8 @@ static bool dex_read(void)
    * DLE SOH <communication id> <R> <revision/level> DLE ETX <crc> -> DLE 1
    */
 
-  tty_write((uint8_t[]){ ENQ }, 1);
-  if (!tty_expect((uint8_t[]){ DLE, '0' }, 2, 100))
+  tty_write(g_enq, 1);
+  if (!tty_expect(g_dle0, 2, 100))
     {
       return false;
     }
@@ -472,40 +534,40 @@ static bool dex_read(void)
   frame[n++] = crc >> 8;
   tty_write(frame, n);
 
-  if (!tty_expect((uint8_t[]){ DLE, '1' }, 2, 100))
+  if (!tty_expect(g_dle1, 2, 100))
     {
       return false;
     }
 
-  tty_write((uint8_t[]){ EOT }, 1);
+  tty_write(g_eot, 1);
 
   /* Second handshake: the machine is master and answers with its
    * response code, communication id and revision/level.
    */
 
-  if (!tty_expect((uint8_t[]){ ENQ }, 1, 1000))
+  if (!tty_expect(g_enq, 1, 1000))
     {
       return false;
     }
 
-  tty_write((uint8_t[]){ DLE, '0' }, 2);
-  if (!tty_expect((uint8_t[]){ DLE, SOH }, 2, 100) ||
+  tty_write(g_dle0, 2);
+  if (!tty_expect(g_dle_soh, 2, 100) ||
       tty_read(buf, 2 + 10 + 6, 100) != 2 + 10 + 6 ||
-      !tty_expect((uint8_t[]){ DLE, ETX }, 2, 100) ||
+      !tty_expect(g_dle_etx, 2, 100) ||
       tty_read(buf, 2, 100) != 2)
     {
       return false;
     }
 
-  tty_write((uint8_t[]){ DLE, '1' }, 2);
-  if (!tty_expect((uint8_t[]){ EOT }, 1, 100))
+  tty_write(g_dle1, 2);
+  if (!tty_expect(g_eot, 1, 100))
     {
       return false;
     }
 
   /* Data transfer: the machine may take a while to assemble the audit */
 
-  if (!tty_expect((uint8_t[]){ ENQ }, 1, 3000))
+  if (!tty_expect(g_enq, 1, 3000))
     {
       return false;
     }
@@ -516,7 +578,7 @@ static bool dex_read(void)
       ack[1] = '0' + (block++ & 1);
       tty_write(ack, 2);
 
-      if (!tty_expect((uint8_t[]){ DLE, STX }, 2, 1000))
+      if (!tty_expect(g_dle_stx, 2, 1000))
         {
           break;
         }
@@ -621,7 +683,7 @@ int main(int argc, FAR char *argv[])
     {
       fprintf(stderr, "dex: open %s failed: %d\n", CONFIG_VMFLOW_DEX_TTY,
               errno);
-      pthread_mutex_unlock(&g_lock);
+      lock_give();
       return EXIT_FAILURE;
     }
 
@@ -645,7 +707,7 @@ int main(int argc, FAR char *argv[])
   if (!ok)
     {
       fprintf(stderr, "dex: no answer from the machine\n");
-      pthread_mutex_unlock(&g_lock);
+      lock_give();
       return EXIT_FAILURE;
     }
 
@@ -659,6 +721,6 @@ int main(int argc, FAR char *argv[])
   fprintf(stderr, "dex: %zu bytes over %s%s\n", g_len, protocol,
           g_truncated ? " (truncated)" : "");
 
-  pthread_mutex_unlock(&g_lock);
+  lock_give();
   return EXIT_SUCCESS;
 }

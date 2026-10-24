@@ -22,4 +22,8 @@ endif
 
 CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/external/mdb
 
+# Shared header-only helpers (daemon_status.h)
+
+CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/external/include
+
 include $(APPDIR)/Application.mk

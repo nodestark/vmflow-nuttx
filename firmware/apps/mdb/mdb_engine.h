@@ -8,7 +8,15 @@
 #ifndef __VMFLOW_APPS_MDB_MDB_ENGINE_H
 #define __VMFLOW_APPS_MDB_MDB_ENGINE_H
 
+/****************************************************************************
+ * Included Files
+ ****************************************************************************/
+
 #include <stdbool.h>
+
+/****************************************************************************
+ * Public Function Prototypes
+ ****************************************************************************/
 
 int  mdb_engine_run(int argc, FAR char *argv[]);
 int  mdb_engine_start(void);

@@ -11,7 +11,7 @@ config VMFLOW_SIM7080G_PWRKEY_GPIO
 	depends on DEV_GPIO
 	---help---
 		GPIO driving the SIM7080G PWRKEY through an inverting transistor
-		(high = key pressed). Exposed as /dev/sim7080g_pwrkey.
+		(high = key pressed). Exposed as /dev/gpio1.
 
 config VMFLOW_BUZZER_GPIO
 	int "Buzzer GPIO"

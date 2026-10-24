@@ -66,7 +66,6 @@
 #define BLE_VEND_APPROVE  0x03
 #define BLE_SESSION_CLOSE 0x04
 
-
 /****************************************************************************
  * Private Function Prototypes
  ****************************************************************************/
@@ -126,7 +125,6 @@ static bool g_synced;
 static int g_adv_rc = -1;
 static char g_name[VMFLOW_SUB_LEN + sizeof("." VMFLOW_DOMAIN)];
 
-
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -166,7 +164,8 @@ static bool payload_valid(FAR const uint8_t *p, size_t len)
     }
 
   return diff == 0 &&
-         labs((long)(time(NULL) - (time_t)get_u32(&p[7]))) <= BLE_FRESHNESS_S;
+         labs((long)(time(NULL) - (time_t)get_u32(&p[7]))) <=
+         BLE_FRESHNESS_S;
 }
 
 static void advertise(void)
@@ -467,14 +466,14 @@ void vmflow_ble_notify(uint8_t cmd, uint32_t price, uint16_t item)
     }
 }
 
-void vmflow_ble_status(void)
+void vmflow_ble_status(FAR FILE *out)
 {
-  printf("ble     : %s, name %s, %s%s\n",
-         !g_synced ? "not synced with the controller" :
-         g_adv_rc != 0 ? "advertising failed" : "advertising",
-         g_name,
-         g_conn != BLE_HS_CONN_HANDLE_NONE ? "connected" : "no connection",
-         g_notify ? ", notifying" : "");
+  fprintf(out, "ble     : %s, name %s, %s%s\n",
+          !g_synced ? "not synced with the controller" :
+          g_adv_rc != 0 ? "advertising failed" : "advertising",
+          g_name,
+          g_conn != BLE_HS_CONN_HANDLE_NONE ? "connected" : "no connection",
+          g_notify ? ", notifying" : "");
 }
 
 void vmflow_ble_set_name(FAR const char *subdomain)

@@ -35,7 +35,7 @@ config SIM7080G_PRIORITY
 
 config SIM7080G_STACKSIZE
 	int "Daemon stack size"
-	default 2048
+	default 4096
 
 config SIM7080G_PPP_PRIORITY
 	int "pppd task priority"
@@ -51,7 +51,7 @@ config SIM7080G_TTY
 
 config SIM7080G_PWRKEY
 	string "PWRKEY GPIO device"
-	default "/dev/sim7080g_pwrkey"
+	default "/dev/gpio1"
 
 config SIM7080G_APN
 	string "APN"

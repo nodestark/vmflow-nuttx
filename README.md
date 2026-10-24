@@ -231,7 +231,7 @@ nsh> ps
     6     6     4 100 RR       Task      - Waiting  Signal    ... sim7080g
     7     7     6 100 RR       Task      - Waiting  Semaphore ... pppd
 nsh> sim7080g status
-daemon  : pid 6, pppd pid 7
+pppd    : pid 7
 link    : up for 46 s
 ip      : 100.82.56.6
 apn     : lf.br, cmnb 3, tty /dev/ttyS1
@@ -262,7 +262,7 @@ daemon reuses the running pppd.
 The daemon mirrors `sim7080g_task()` from the ESP-IDF firmware:
 
 1. Sends `+++` (a modem left in data mode by a previous run) and probes `AT`. A silent modem
-   gets a PWRKEY pulse (`/dev/sim7080g_pwrkey`, GPIO14, 1.2 s).
+   gets a PWRKEY pulse (`/dev/gpio1`, GPIO14, 1.2 s).
 2. Starts pppd in its own task. The connect script runs on every (re)connect: `ATE0`, `ATH`
    (drops a stale data call), `AT+CNMP=38`, `AT+CMNB=<mode>`, `AT+CGDCONT=1,"IP","<APN>"`,
    waits for `+CGATT: 1`, then `ATD*99#`. pppd retries it on its own until the modem is
@@ -420,7 +420,7 @@ The buzzer is GPIO12 through the NuttX GPIO driver, `/dev/gpio0` (`gpio -o 1 /de
 ```
 nsh> vmflow status
 vmflow  : NuttX 0.0.0, build 2b5c0de5 Oct 24 2026 16:15:13
-daemon  : pid 11, device 123
+device  : 123
 machine : enabled, last sale item 0 price 0, 0 failed vends
 mqtt    : connected for 44 s, broker mqtt.vmflow.xyz:1883
 sessions: 1, failed attempts: 1
@@ -433,7 +433,6 @@ ble     : advertising, name 123.vmflow.xyz, no connection
 | `vmflow` | run it in the foreground (what init does) |
 | `vmflow start` | spawn it in the background, when autostart is off |
 | `vmflow status` | identity, machine view, MQTT and BLE state |
-| `vmflow pub <topic> <msg> [qos] [retain]` | publish through the running session |
 
 Settings live under **Application Configuration → VMflow → VMflow orchestrator**: autostart,
 identity directory, device paths, the `dex` command, broker, buffers and BLE. The MQTT send
@@ -479,8 +478,9 @@ Only the audit goes to stdout; status lines (`dex: <n> bytes over DEX/UCS`,
 redirected. `/tmp` is a tmpfs in RAM, cleared on reboot.
 
 One read at a time: a `dex` started while another is running exits with
-`dex: busy, another read is in progress`. The lock is a robust mutex, so a `dex` that dies mid-read
-does not leave it held.
+`dex: busy, another read is in progress`. The lock is a file holding the reader's pid
+(`/tmp/dex.lock`, the serial port lock convention), so a `dex` that dies mid-read does not leave
+it held.
 
 Differences from the ESP-IDF version:
 
@@ -499,6 +499,8 @@ Configured in the board's defconfig, used by the applications above:
 | | |
 |-|-|
 | `/data` | LittleFS on the SPI flash (1 MB at 0x180000), formatted on first boot |
+| `/tmp/<daemon>.status` | each daemon (`mdb`, `sim7080g`, `vmflow`) writes its status there, pid first; `<daemon> status` prints it and the pid tells whether it runs, so no command reads another task's memory |
+| GPIO | numbered like any NuttX board: `/dev/gpio0` buzzer, `/dev/gpio1` SIM7080G PWRKEY |
 | NTP | `ntpcstart` from `init.rc`; polls `pool.ntp.org` over `ppp0` once the link is up |
 | syslog | RAM buffer, read with `dmesg` (the USB-Serial/JTAG console has no low-level output, so the default channel showed nothing) |
 | watchdog | MWDT0 (`/dev/watchdog0`), started and fed by the MDB engine |

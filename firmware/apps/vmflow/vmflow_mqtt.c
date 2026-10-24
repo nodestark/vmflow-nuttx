@@ -79,8 +79,8 @@ struct rpc_slot_s
 static struct vmflow_mqtt_state_s g_mqtt;
 static struct mqtt_client g_client;
 
-/* Guards g_client and g_sub against the other vmflow threads (and
- * "vmflow pub") while the client swaps the socket on reconnect.
+/* Guards g_client and g_sub against the other vmflow threads while the
+ * client swaps the socket on reconnect.
  */
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -447,19 +447,19 @@ void vmflow_mqtt_restart(void)
   g_mqtt.restart = true;
 }
 
-void vmflow_mqtt_status(void)
+void vmflow_mqtt_status(FAR FILE *out)
 {
-  printf("mqtt    : %s for %lld s, broker %s:%d\n",
-         g_mqtt.connected ? "connected" : "disconnected",
-         (long long)(uptime() - g_mqtt.since), CONFIG_VMFLOW_MQTT_HOST,
-         CONFIG_VMFLOW_MQTT_PORT);
-  printf("sessions: %u, failed attempts: %u\n",
-         g_mqtt.connects, g_mqtt.failures);
-  printf("messages: rx %u, tx %u, late acks %u\n", g_mqtt.rx, g_mqtt.tx,
-         g_mqtt.late_acks);
+  fprintf(out, "mqtt    : %s for %lld s, broker %s:%d\n",
+          g_mqtt.connected ? "connected" : "disconnected",
+          (long long)(uptime() - g_mqtt.since), CONFIG_VMFLOW_MQTT_HOST,
+          CONFIG_VMFLOW_MQTT_PORT);
+  fprintf(out, "sessions: %u, failed attempts: %u\n",
+          g_mqtt.connects, g_mqtt.failures);
+  fprintf(out, "messages: rx %u, tx %u, late acks %u\n", g_mqtt.rx,
+          g_mqtt.tx, g_mqtt.late_acks);
 
   if (g_mqtt.last_error < 0)
     {
-      printf("last err: %s\n", mqtt_error_str(g_mqtt.last_error));
+      fprintf(out, "last err: %s\n", mqtt_error_str(g_mqtt.last_error));
     }
 }

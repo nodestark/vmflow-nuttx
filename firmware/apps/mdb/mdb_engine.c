@@ -53,6 +53,7 @@
 #  include <nuttx/timers/watchdog.h>
 #endif
 
+#include "daemon_status.h"
 #include "mdb.h"
 #include "mdb_engine.h"
 
@@ -81,6 +82,9 @@
 #define WORD_GAP_MS    20
 
 #define SEC_MS(s)      ((int64_t)(s) * 1000)
+
+#define STATUS_NAME      "mdb"      /* /tmp/mdb.status */
+#define STATUS_PERIOD_MS 1000
 
 #define FUNDS_UNLIMITED_WIRE 0xffff
 #define FUNDS_MAX_WIRE       0xfffe
@@ -133,18 +137,19 @@ enum
  * Private Types
  ****************************************************************************/
 
-struct mdb_engine_s
+struct mdb_sub_s
 {
   pid_t pid;
+  mqd_t mq;
+  unsigned int dropped;         /* events its full queue did not take */
+};
+
+struct mdb_engine_s
+{
   int fd;
   mqd_t cmdq;
 
-  struct
-  {
-    pid_t pid;
-    mqd_t mq;
-    unsigned int dropped;       /* events its full queue did not take */
-  } subs[MAX_SUBSCRIBERS];
+  struct mdb_sub_s subs[MAX_SUBSCRIBERS];
   bool ioerr;
 
   uint8_t state;                /* enum mdb_state_e */
@@ -175,6 +180,7 @@ struct mdb_engine_s
 
   bool frame_broken;            /* a word timed out in this frame */
   int wdog;                     /* watchdog fd, -1 without */
+  int64_t status_ms;            /* last status file write */
 
   struct mdb_evt_s events[MAX_EVENTS];
   int nevents;
@@ -712,7 +718,10 @@ static int handle_frame(uint8_t command, uint8_t checksum,
               out[3] = CONFIG_VMFLOW_MDB_CURRENCY_CODE & 0xff;
               out[4] = CONFIG_VMFLOW_MDB_SCALE_FACTOR;
               out[5] = CONFIG_VMFLOW_MDB_DECIMAL_PLACES;
-              out[6] = CONFIG_VMFLOW_MDB_RESPONSE_TIME; /* max response, s */
+
+              /* Maximum response time, s */
+
+              out[6] = CONFIG_VMFLOW_MDB_RESPONSE_TIME;
               out[7] = 0x09;                    /* misc options */
               return 8;
 
@@ -998,6 +1007,99 @@ static int engine_open(void)
   return 0;
 }
 
+/* What "mdb status" prints, written by the engine to its status file */
+
+static void print_status(FAR FILE *out)
+{
+  int i;
+
+  fprintf(out, "engine  : up %lld s, %s, address 0x%02x, watchdog %s\n",
+          secs_since(g_mdb.since), CONFIG_VMFLOW_MDB_DEVPATH,
+          CONFIG_VMFLOW_MDB_ADDRESS, g_mdb.wdog >= 0 ? "on" : "off");
+  fprintf(out, "state   : %s, vmc level %u\n", mdb_state_name(g_mdb.state),
+          g_mdb.vmc_level);
+
+  if (g_mdb.state >= MDB_STATE_IDLE)
+    {
+      if (g_mdb.funds == FUNDS_UNLIMITED_WIRE)
+        {
+          fprintf(out, "session : app (vends wait for approve/deny), "
+                  "%lld s, idle %lld s\n", secs_since(g_mdb.session_since),
+                  secs_since(g_mdb.activity_ms));
+        }
+      else
+        {
+          fprintf(out, "session : funds %lu, %lld s, idle %lld s\n",
+                  (unsigned long)from_wire(g_mdb.funds),
+                  secs_since(g_mdb.session_since),
+                  secs_since(g_mdb.activity_ms));
+        }
+    }
+
+  if (g_mdb.state == MDB_STATE_VEND)
+    {
+      fprintf(out, "vend    : item %u, price %lu, %lld s%s\n",
+              g_mdb.item_number, (unsigned long)from_wire(g_mdb.item_price),
+              secs_since(g_mdb.vend_since),
+              g_mdb.vend_answered || g_mdb.approved_todo ||
+              g_mdb.denied_todo ? "" : " (waiting for approve/deny)");
+    }
+
+  if (g_mdb.pending == FUNDS_UNLIMITED_WIRE)
+    {
+      fprintf(out, "pending : app session, %lld s\n",
+              secs_since(g_mdb.pending_since));
+    }
+  else if (g_mdb.pending != 0)
+    {
+      fprintf(out, "pending : credit %lu, %lld s\n",
+              (unsigned long)from_wire(g_mdb.pending),
+              secs_since(g_mdb.pending_since));
+    }
+
+  fprintf(out, "bus     : %lu words, %lu frames for us, %u bad, last %lld s "
+          "ago, lost %u\n", g_mdb.words, g_mdb.frames, g_mdb.bad_frames,
+          secs_since(g_mdb.frame_ms), g_mdb.bus_losses);
+  fprintf(out, "totals  : sessions %u, vends %u, failed %u, cash %u\n",
+          g_mdb.sessions, g_mdb.vends, g_mdb.vend_fails, g_mdb.cash_sales);
+  fprintf(out, "timeouts: approve %u, credits expired %u (session %d s, "
+          "approve %d s, bus %d s, credit %d s)\n", g_mdb.approve_timeouts,
+          g_mdb.credits_expired, CONFIG_VMFLOW_MDB_SESSION_TIMEOUT,
+          CONFIG_VMFLOW_MDB_APPROVE_TIMEOUT, CONFIG_VMFLOW_MDB_BUS_TIMEOUT,
+          CONFIG_VMFLOW_MDB_CREDIT_TIMEOUT);
+
+  if (g_mdb.vends > 0)
+    {
+      fprintf(out, "last    : item %u, price %lu\n", g_mdb.last_item,
+              (unsigned long)g_mdb.last_price);
+    }
+
+  for (i = 0; i < MAX_SUBSCRIBERS; i++)
+    {
+      if (g_mdb.subs[i].pid > 0)
+        {
+          fprintf(out, "listener: pid %d, %u events dropped\n",
+                  g_mdb.subs[i].pid, g_mdb.subs[i].dropped);
+        }
+    }
+
+  fprintf(out, "currency: 0x%04x, scale %d, decimals %d (amounts in "
+          "cents)\n", CONFIG_VMFLOW_MDB_CURRENCY_CODE,
+          CONFIG_VMFLOW_MDB_SCALE_FACTOR, CONFIG_VMFLOW_MDB_DECIMAL_PLACES);
+}
+
+static void write_status(void)
+{
+  FAR FILE *out;
+
+  out = daemon_status_begin(STATUS_NAME);
+  if (out != NULL)
+    {
+      print_status(out);
+      daemon_status_commit(STATUS_NAME, out);
+    }
+}
+
 /****************************************************************************
  * Name: housekeeping
  *
@@ -1069,6 +1171,12 @@ static void housekeeping(void)
     }
 
   flush_events();
+
+  if (now - g_mdb.status_ms >= STATUS_PERIOD_MS)
+    {
+      g_mdb.status_ms = now;
+      write_status();
+    }
 }
 
 /****************************************************************************
@@ -1087,7 +1195,6 @@ int mdb_engine_run(int argc, FAR char *argv[])
       return 1;
     }
 
-  g_mdb.pid      = getpid();
   g_mdb.since    = uptime_ms();
   g_mdb.frame_ms = g_mdb.since;
   g_mdb.ioerr    = false;
@@ -1140,7 +1247,7 @@ int mdb_engine_run(int argc, FAR char *argv[])
 
   fprintf(stderr, "mdb: bus read failed: %d\n", errno);
   engine_close();
-  g_mdb.pid = 0;
+  daemon_status_remove(STATUS_NAME);
   return 1;
 }
 
@@ -1148,9 +1255,10 @@ int mdb_engine_start(void)
 {
   pid_t pid;
 
-  if (task_alive(g_mdb.pid))
+  pid = daemon_status_pid(STATUS_NAME);
+  if (pid > 0)
     {
-      printf("mdb: already running (pid %d)\n", g_mdb.pid);
+      printf("mdb: already running (pid %d)\n", pid);
       return 0;
     }
 
@@ -1168,90 +1276,13 @@ int mdb_engine_start(void)
 
 bool mdb_engine_running(void)
 {
-  return task_alive(g_mdb.pid);
+  return daemon_status_pid(STATUS_NAME) > 0;
 }
 
 void mdb_engine_status(void)
 {
-  int i;
-
-  if (!task_alive(g_mdb.pid))
+  if (daemon_status_show(STATUS_NAME) < 0)
     {
       printf("mdb: not running\n");
-      return;
     }
-
-  printf("engine  : pid %d, up %lld s, %s, address 0x%02x, watchdog %s\n",
-         g_mdb.pid, secs_since(g_mdb.since), CONFIG_VMFLOW_MDB_DEVPATH,
-         CONFIG_VMFLOW_MDB_ADDRESS, g_mdb.wdog >= 0 ? "on" : "off");
-  printf("state   : %s, vmc level %u\n", mdb_state_name(g_mdb.state),
-         g_mdb.vmc_level);
-
-  if (g_mdb.state >= MDB_STATE_IDLE)
-    {
-      if (g_mdb.funds == FUNDS_UNLIMITED_WIRE)
-        {
-          printf("session : app (vends wait for approve/deny), %lld s, "
-                 "idle %lld s\n", secs_since(g_mdb.session_since),
-                 secs_since(g_mdb.activity_ms));
-        }
-      else
-        {
-          printf("session : funds %lu, %lld s, idle %lld s\n",
-                 (unsigned long)from_wire(g_mdb.funds),
-                 secs_since(g_mdb.session_since),
-                 secs_since(g_mdb.activity_ms));
-        }
-    }
-
-  if (g_mdb.state == MDB_STATE_VEND)
-    {
-      printf("vend    : item %u, price %lu, %lld s%s\n", g_mdb.item_number,
-             (unsigned long)from_wire(g_mdb.item_price),
-             secs_since(g_mdb.vend_since),
-             g_mdb.vend_answered || g_mdb.approved_todo ||
-             g_mdb.denied_todo ? "" : " (waiting for approve/deny)");
-    }
-
-  if (g_mdb.pending == FUNDS_UNLIMITED_WIRE)
-    {
-      printf("pending : app session, %lld s\n",
-             secs_since(g_mdb.pending_since));
-    }
-  else if (g_mdb.pending != 0)
-    {
-      printf("pending : credit %lu, %lld s\n",
-             (unsigned long)from_wire(g_mdb.pending),
-             secs_since(g_mdb.pending_since));
-    }
-
-  printf("bus     : %lu words, %lu frames for us, %u bad, last %lld s "
-         "ago, lost %u\n", g_mdb.words, g_mdb.frames, g_mdb.bad_frames,
-         secs_since(g_mdb.frame_ms), g_mdb.bus_losses);
-  printf("totals  : sessions %u, vends %u, failed %u, cash %u\n",
-         g_mdb.sessions, g_mdb.vends, g_mdb.vend_fails, g_mdb.cash_sales);
-  printf("timeouts: approve %u, credits expired %u (session %d s, approve "
-         "%d s, bus %d s, credit %d s)\n", g_mdb.approve_timeouts,
-         g_mdb.credits_expired, CONFIG_VMFLOW_MDB_SESSION_TIMEOUT,
-         CONFIG_VMFLOW_MDB_APPROVE_TIMEOUT, CONFIG_VMFLOW_MDB_BUS_TIMEOUT,
-         CONFIG_VMFLOW_MDB_CREDIT_TIMEOUT);
-
-  if (g_mdb.vends > 0)
-    {
-      printf("last    : item %u, price %lu\n", g_mdb.last_item,
-             (unsigned long)g_mdb.last_price);
-    }
-
-  for (i = 0; i < MAX_SUBSCRIBERS; i++)
-    {
-      if (g_mdb.subs[i].pid > 0)
-        {
-          printf("listener: pid %d, %u events dropped\n",
-                 g_mdb.subs[i].pid, g_mdb.subs[i].dropped);
-        }
-    }
-
-  printf("currency: 0x%04x, scale %d, decimals %d (amounts in cents)\n",
-         CONFIG_VMFLOW_MDB_CURRENCY_CODE, CONFIG_VMFLOW_MDB_SCALE_FACTOR,
-         CONFIG_VMFLOW_MDB_DECIMAL_PLACES);
 }

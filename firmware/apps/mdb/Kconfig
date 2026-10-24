@@ -29,7 +29,9 @@ config VMFLOW_MDB_PRIORITY
 
 config VMFLOW_MDB_STACKSIZE
 	int "Stack size"
-	default 2048
+	default 4096
+	---help---
+		Includes the status file, written with stdio once a second.
 
 config VMFLOW_MDB_AUTOSTART
 	bool "Start at boot (nxinit service)"

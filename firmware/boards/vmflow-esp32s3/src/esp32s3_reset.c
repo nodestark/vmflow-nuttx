@@ -1,5 +1,7 @@
 /****************************************************************************
- * firmware/boards/vmflow-esp32s3/ (from esp32s3-devkit) src/esp32s3_reset.c
+ * firmware/boards/vmflow-esp32s3/src/esp32s3_reset.c
+ *
+ * Derived from boards/xtensa/esp32s3/esp32s3-devkit (Apache NuttX).
  *
  * SPDX-License-Identifier: Apache-2.0
  *

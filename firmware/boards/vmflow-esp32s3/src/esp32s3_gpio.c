@@ -3,8 +3,11 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Board GPIOs exposed through the NuttX GPIO driver: the buzzer as
- * /dev/gpio0 (nsh> gpio -o 1 /dev/gpio0) and the SIM7080G PWRKEY by name.
+ * Board GPIOs exposed through the NuttX GPIO driver, numbered like any
+ * NuttX board (nsh> gpio -o 1 /dev/gpio0):
+ *
+ *   /dev/gpio0  buzzer (high = on)
+ *   /dev/gpio1  SIM7080G PWRKEY (high = key pressed)
  *
  ****************************************************************************/
 
@@ -36,8 +39,7 @@
 struct vmflow_gpout_s
 {
   struct gpio_dev_s gpio;
-  FAR const char *name;         /* NULL: /dev/gpio<minor> */
-  uint8_t minor;
+  uint8_t minor;                /* /dev/gpio<minor> */
   uint8_t pin;
 };
 
@@ -67,8 +69,8 @@ static struct vmflow_gpout_s g_gpout[] =
     .pin   = CONFIG_VMFLOW_BUZZER_GPIO,
   },
   {
-    .name = "sim7080g_pwrkey",
-    .pin  = CONFIG_VMFLOW_SIM7080G_PWRKEY_GPIO,
+    .minor = 1,
+    .pin   = CONFIG_VMFLOW_SIM7080G_PWRKEY_GPIO,
   },
 };
 
@@ -118,14 +120,7 @@ int esp32s3_gpio_init(void)
       g_gpout[i].gpio.gp_pintype = GPIO_OUTPUT_PIN;
       g_gpout[i].gpio.gp_ops     = &g_gpout_ops;
 
-      if (g_gpout[i].name != NULL)
-        {
-          ret = gpio_pin_register_byname(&g_gpout[i].gpio, g_gpout[i].name);
-        }
-      else
-        {
-          ret = gpio_pin_register(&g_gpout[i].gpio, g_gpout[i].minor);
-        }
+      ret = gpio_pin_register(&g_gpout[i].gpio, g_gpout[i].minor);
 
       if (ret < 0)
         {

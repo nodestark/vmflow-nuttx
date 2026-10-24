@@ -20,6 +20,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <time.h>
 
 /****************************************************************************
@@ -41,7 +42,7 @@
  ****************************************************************************/
 
 /* What the orchestrator knows about the machine, from the engine events.
- * Read by "info", the LED and "vmflow status".
+ * Read by "info", the LED and the status file.
  */
 
 struct vmflow_machine_s
@@ -86,7 +87,7 @@ int  vmflow_mqtt_publish(FAR const char *topic, FAR const void *payload,
                          size_t len, int qos, bool retain);
 int  vmflow_publish_signed(FAR const char *what, FAR const char *msg);
 void vmflow_mqtt_restart(void);
-void vmflow_mqtt_status(void);
+void vmflow_mqtt_status(FAR FILE *out);
 
 /* vmflow_rpc.c */
 
@@ -108,12 +109,12 @@ int  vmflow_dex_start(void);
 int  vmflow_ble_start(void);
 void vmflow_ble_notify(uint8_t cmd, uint32_t price, uint16_t item);
 void vmflow_ble_set_name(FAR const char *subdomain);
-void vmflow_ble_status(void);
+void vmflow_ble_status(FAR FILE *out);
 #else
 #  define vmflow_ble_start()          (0)
 #  define vmflow_ble_notify(c, p, i)
 #  define vmflow_ble_set_name(s)
-#  define vmflow_ble_status()
+#  define vmflow_ble_status(o)
 #endif
 
 #endif /* __VMFLOW_APPS_VMFLOW_VMFLOW_H */

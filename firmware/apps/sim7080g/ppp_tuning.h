@@ -10,7 +10,15 @@
 #ifndef __FIRMWARE_APPS_SIM7080G_PPP_TUNING_H
 #define __FIRMWARE_APPS_SIM7080G_PPP_TUNING_H
 
+/****************************************************************************
+ * Included Files
+ ****************************************************************************/
+
 #include <nuttx/config.h>
+
+/****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
 
 /* pppd drops the link once it has sent this many frames in a row without
  * receiving one. Upstream uses 5, which a few back-to-back TCP segments
