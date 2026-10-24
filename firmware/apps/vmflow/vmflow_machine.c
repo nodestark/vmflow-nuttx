@@ -7,12 +7,19 @@
  *
  *   vend_request / vend_success / vend_failure / session_end
  *                   BLE notification to the phone app (19 bytes, signed)
- *   vend_success    "<price>:<item>:<ts>" signed on .../vend_success, for
- *                   sessions funded by a credit; the backend attaches the
- *                   item to the sale it recorded when it sent the credit.
- *                   App sessions (no fixed funds) are reported by the app.
- *   vend_failure    "<price>,<item>:<ts>" signed on .../vend_fail
+ *   vend_success    "<price>:<item>[:<seq>]:<ts>" signed on
+ *                   .../vend_success, once per session funded by a
+ *                   credit: the backend settles the sale it recorded when
+ *                   it sent the credit (by seq when the credit carried
+ *                   one). Further vends on leftover funds have no sale of
+ *                   their own. App sessions (no fixed funds) are reported
+ *                   by the app.
+ *   vend_failure    "<price>,<item>[,<seq>]:<ts>" signed on .../vend_fail
  *   cash_sale       "<price>:<item>:<ts>" signed on .../sale
+ *
+ * seq is the backend's sales.seq from "credit:<cents>,<seq>"; it stays
+ * here, the engine only knows amounts. A credit is taken by the next
+ * session with fixed funds.
  *
  * Prices are in cents (the 1/100 units of the backend). The engine may
  * not be running, or may restart and forget its subscribers; the thread
@@ -62,9 +69,22 @@ struct vmflow_machine_s g_machine;
  * Private Data
  ****************************************************************************/
 
-/* The open session was funded by a credit (MQTT RPC or "mdb credit") */
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* A session is open; snapshots then leave the flags below alone */
+
+static bool g_session;
+
+/* The open session was funded by a credit (MQTT RPC or "mdb credit") and
+ * its vend_success is still to be published
+ */
 
 static bool g_credit_session;
+
+/* seq of the credit queued to the engine, then of the session it opened */
+
+static uint32_t g_pending_seq;
+static uint32_t g_session_seq;
 
 /****************************************************************************
  * Private Functions
@@ -78,6 +98,26 @@ static time_t uptime(void)
   return ts.tv_sec;
 }
 
+static void session_begin(uint32_t funds)
+{
+  g_session        = true;
+  g_credit_session = funds != MDB_FUNDS_UNLIMITED;
+  g_session_seq    = 0;
+
+  if (g_credit_session)
+    {
+      g_session_seq = g_pending_seq;
+      g_pending_seq = 0;
+    }
+}
+
+static void session_end(void)
+{
+  g_session        = false;
+  g_credit_session = false;
+  g_session_seq    = 0;
+}
+
 static void handle_event(FAR const struct mdb_evt_s *e)
 {
   char msg[48];
@@ -85,12 +125,31 @@ static void handle_event(FAR const struct mdb_evt_s *e)
   g_machine.engine = true;
   g_machine.state  = e->state;
 
+  pthread_mutex_lock(&g_lock);
+
   switch (e->evt)
     {
-      case MDB_EVT_SNAPSHOT:
       case MDB_EVT_SESSION_BEGIN:
-        g_credit_session = e->state >= MDB_STATE_IDLE &&
-                           e->price != MDB_FUNDS_UNLIMITED;
+        session_begin(e->price);
+        break;
+
+      /* Answer to every renewal: only catches up on a session opened or
+       * closed while we were not listening.
+       */
+
+      case MDB_EVT_SNAPSHOT:
+        if (e->state < MDB_STATE_IDLE)
+          {
+            session_end();
+          }
+        else if (!g_session)
+          {
+            session_begin(e->price);
+          }
+        break;
+
+      case MDB_EVT_CREDIT_EXPIRED:
+        g_pending_seq = 0;
         break;
 
       case MDB_EVT_VEND_REQUEST:
@@ -105,24 +164,50 @@ static void handle_event(FAR const struct mdb_evt_s *e)
 
         if (g_credit_session)
           {
-            snprintf(msg, sizeof(msg), "%lu:%u:%lld",
-                     (unsigned long)e->price, e->item,
-                     (long long)time(NULL));
+            g_credit_session = false;
+
+            if (g_session_seq != 0)
+              {
+                snprintf(msg, sizeof(msg), "%lu:%u:%lu:%lld",
+                         (unsigned long)e->price, e->item,
+                         (unsigned long)g_session_seq,
+                         (long long)time(NULL));
+              }
+            else
+              {
+                snprintf(msg, sizeof(msg), "%lu:%u:%lld",
+                         (unsigned long)e->price, e->item,
+                         (long long)time(NULL));
+              }
+
             vmflow_publish_signed("vend_success", msg);
           }
+
+        g_session_seq = 0;
         break;
 
       case MDB_EVT_VEND_FAILURE:
         g_machine.vend_fails++;
         vmflow_ble_notify(BLE_VEND_FAILURE, e->price, e->item);
 
-        snprintf(msg, sizeof(msg), "%lu,%u:%lld", (unsigned long)e->price,
-                 e->item, (long long)time(NULL));
+        if (g_session_seq != 0)
+          {
+            snprintf(msg, sizeof(msg), "%lu,%u,%lu:%lld",
+                     (unsigned long)e->price, e->item,
+                     (unsigned long)g_session_seq, (long long)time(NULL));
+          }
+        else
+          {
+            snprintf(msg, sizeof(msg), "%lu,%u:%lld",
+                     (unsigned long)e->price, e->item,
+                     (long long)time(NULL));
+          }
+
         vmflow_publish_signed("vend_fail", msg);
         break;
 
       case MDB_EVT_SESSION_END:
-        g_credit_session = false;
+        session_end();
         vmflow_ble_notify(BLE_SESSION_COMPLETE, 0, 0);
         break;
 
@@ -136,6 +221,7 @@ static void handle_event(FAR const struct mdb_evt_s *e)
         break;
     }
 
+  pthread_mutex_unlock(&g_lock);
   vmflow_led_update();
 }
 
@@ -205,6 +291,42 @@ static FAR void *machine_thread(FAR void *arg)
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
+
+/* Remote credit: "credit:<cents>[,<seq>]". A seq not above the last one
+ * accepted is a replay and refused (-EALREADY); it is stored before the
+ * credit is queued, as the ESP-IDF firmware does.
+ */
+
+int vmflow_machine_credit(uint32_t cents, uint32_t seq)
+{
+  int ret;
+
+  pthread_mutex_lock(&g_lock);
+
+  if (seq != 0)
+    {
+      if (seq <= vmflow_last_seq())
+        {
+          pthread_mutex_unlock(&g_lock);
+          return -EALREADY;
+        }
+
+      ret = vmflow_last_seq_set(seq);
+      if (ret < 0)
+        {
+          syslog(LOG_ERR, "vmflow: cannot store last_seq: %d\n", ret);
+        }
+    }
+
+  ret = mdb_request(MDB_CMD_SESSION_OPEN, cents);
+  if (ret == 0)
+    {
+      g_pending_seq = seq;
+    }
+
+  pthread_mutex_unlock(&g_lock);
+  return ret;
+}
 
 int vmflow_machine_start(void)
 {

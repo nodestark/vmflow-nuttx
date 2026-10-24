@@ -131,6 +131,7 @@ command), never through another task's memory, so each runs, restarts and is tes
 | Path | Writer | Readers | Content |
 |------|--------|---------|---------|
 | `/data/vmflow/subdomain`, `passkey` | you (`echo`), BLE provisioning | `vmflow` | device identity, persistent |
+| `/data/vmflow/last_seq` | `vmflow`, on each `credit` with a seq | `vmflow` | highest remote-credit seq accepted (replay guard) |
 | `/tmp/<daemon>.status` | `mdb`, `sim7080g`, `vmflow`, once a second | `<daemon> status`, anyone | pid, then the status lines |
 | `/tmp/dex.lock` | `dex` while reading | `dex` | pid of the reader |
 | `/mdb_cmd` (mqueue) | any client (`mdb_request()`) | engine | commands |
@@ -468,7 +469,7 @@ Commands without an argument send `-`.
 
 | Command | Action | Reply |
 |---------|--------|-------|
-| `credit:<cents>` | MDB session with that credit (`mdb_request`), beep | `.../rpc/confirm` `ok` |
+| `credit:<cents>[,<seq>]` | MDB session with that credit (`mdb_request`), beep; see below for `seq` | `.../rpc/confirm` `ok` |
 | `oos:-` | "command out of sequence" on the next poll | `.../rpc/confirm` `ok` |
 | `dex:-` | runs `dex`, publishes its stdout | `.../rpc/confirm` `ok`, then `.../rpc/dex` |
 | `info:-` | device snapshot JSON (`version` of this firmware, `nuttx` release, uptime, heap, `machine_state`, last sale, `ip_ppp`) | `.../rpc/info` |
@@ -486,14 +487,21 @@ From the engine's events, signed (`<msg>:<hmac>`) on `domain.vmflow.xyz/<subdoma
 | Event | Topic | Message |
 |-------|-------|---------|
 | `cash_sale` | `sale` | `<cents>:<item>:<ts>` |
-| `vend_success` in a credit session | `vend_success` | `<cents>:<item>:<ts>` |
-| `vend_failure` | `vend_fail` | `<cents>,<item>:<ts>` |
+| first `vend_success` in a credit session | `vend_success` | `<cents>:<item>[:<seq>]:<ts>` |
+| `vend_failure` | `vend_fail` | `<cents>,<item>[,<seq>]:<ts>` |
 
-Sessions follow the ESP-IDF firmware (upstream `2680d4d`):
+Sessions follow the ESP-IDF firmware (upstream `d862ae1`):
 
-- **Credit sessions** (MQTT `credit`, or `mdb credit`): the backend recorded the sale when it
-  sent the credit, without the item. `vend_success` carries the item, so the backend maps the
-  product and debits the stock.
+- **Credit sessions** (MQTT `credit`, or `mdb credit`): the backend records the sale as pending
+  when it sends the credit, without the item. `vend_success` carries the item, so the backend
+  maps the product, debits the stock and marks the sale successful; `vend_fail` marks it failed.
+  Only the first vend of the session is reported: further vends on leftover funds have no sale
+  of their own.
+- **seq**: the backend's `sales.seq`, sent as `credit:<cents>,<seq>`, echoed in `vend_success`
+  and `vend_fail` so the exact sale is settled. A seq not above `/data/vmflow/last_seq` is a
+  replayed credit and is refused (logged, no ack). It stays in `vmflow`: the engine only knows
+  amounts, and the next session with fixed funds takes the credit's seq. Without a seq (older
+  senders, `mdb credit`) the messages keep their old form.
 - **App sessions** (BLE `02`, no fixed funds): the app reports the sale from the BLE
   notifications, so nothing is published here.
 

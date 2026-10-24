@@ -65,10 +65,12 @@ extern struct vmflow_machine_s g_machine;
  * Public Function Prototypes
  ****************************************************************************/
 
-/* vmflow_config.c: <CONFIG_VMFLOW_DATADIR>/subdomain and /passkey */
+/* vmflow_config.c: <CONFIG_VMFLOW_DATADIR>/subdomain, passkey, last_seq */
 
 bool vmflow_identity(FAR char *subdomain, FAR char *passkey);
 int  vmflow_identity_set(FAR const char *name, FAR const char *value);
+uint32_t vmflow_last_seq(void);
+int  vmflow_last_seq_set(uint32_t seq);
 
 /* vmflow_hmac.c */
 
@@ -96,6 +98,7 @@ void vmflow_rpc(FAR const char *msg, size_t len);
 /* vmflow_machine.c: engine events -> MQTT, BLE, LED */
 
 int  vmflow_machine_start(void);
+int  vmflow_machine_credit(uint32_t cents, uint32_t seq);
 
 /* vmflow_io.c: buzzer, LED, dex */
 

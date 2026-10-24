@@ -10,7 +10,10 @@
  * hex; ts is Unix time and must be within RPC_FRESHNESS_S of the device
  * clock (NTP). Commands without an argument send "-".
  *
- *   credit:<cents>  begin an MDB session with that credit, beep
+ *   credit:<cents>[,<seq>]
+ *                   begin an MDB session with that credit, beep; seq is
+ *                   the backend's sale, echoed in vend_success/vend_fail,
+ *                   and must be above the last one accepted (replay)
  *   oos:-           answer the VMC's next poll with "out of sequence"
  *   dex:-           read the EVA-DTS audit, publish it on .../rpc/dex
  *   info:-          device snapshot JSON on .../rpc/info
@@ -29,6 +32,7 @@
 
 #include <nuttx/config.h>
 
+#include <errno.h>
 #include <malloc.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -136,6 +140,9 @@ void vmflow_rpc(FAR const char *msg, size_t len)
   char buf[24];
   FAR const char *colon;
   FAR const char *p;
+  FAR char *end;
+  unsigned long cents;
+  unsigned long seq;
   unsigned int ts;
   long dt;
   bool has_args;
@@ -185,7 +192,18 @@ void vmflow_rpc(FAR const char *msg, size_t len)
 
   if (strcmp(cmd, "credit") == 0 && has_args)
     {
-      ret = mdb_request(MDB_CMD_SESSION_OPEN, strtoul(args, NULL, 10));
+      cents = strtoul(args, &end, 10);
+      seq   = *end == ',' ? strtoul(end + 1, NULL, 10) : 0;
+
+      ret = vmflow_machine_credit(cents, seq);
+      if (ret == -EALREADY)
+        {
+          syslog(LOG_WARNING, "vmflow: rpc: credit rejected, replayed "
+                 "seq %lu (last %lu)\n", (unsigned long)seq,
+                 (unsigned long)vmflow_last_seq());
+          return;
+        }
+
       if (ret < 0)
         {
           syslog(LOG_WARNING, "vmflow: rpc: credit not queued: %d\n", ret);
