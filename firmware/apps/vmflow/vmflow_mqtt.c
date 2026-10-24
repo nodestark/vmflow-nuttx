@@ -7,10 +7,12 @@
  * "online" published there on connect and a subscription to
  * <subdomain>.vmflow.xyz/#. The client waits for the network by itself:
  * while ppp0 is down, DNS or connect fail and it retries every
- * CONFIG_VMFLOW_MQTT_RECONNECT seconds.
+ * CONFIG_VMFLOW_MQTT_RECONNECT seconds. Until the device has an identity
+ * (vmflow_config.c) it does not connect at all.
  *
- * Incoming messages are only logged; the signed RPC handler is not ported
- * yet.
+ * Messages on .../rpc go to vmflow_rpc(). MQTT-C calls back with its lock
+ * held and the handler publishes, so the callback only copies them; they
+ * are handled between two mqtt_sync() calls.
  *
  ****************************************************************************/
 
@@ -24,8 +26,6 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <pthread.h>
-#include <sched.h>
-#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -33,19 +33,21 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <sys/boardctl.h>
 #include <sys/socket.h>
 
 #include <mqtt.h>
 
-#include "vmflow_mqtt.h"
+#include "vmflow.h"
 
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define MQTT_DOMAIN       "vmflow.xyz"
 #define MQTT_SYNC_MS      100
-#define MQTT_TOPIC_LEN    64
+#define RPC_MAXLEN        127           /* the ESP-IDF firmware's limit */
+#define RPC_SLOTS         4
+#define RESTART_DELAY_MS  1000          /* let the "ok" reach the broker */
 
 /****************************************************************************
  * Private Types
@@ -53,7 +55,6 @@
 
 struct vmflow_mqtt_state_s
 {
-  pid_t pid;
   bool connected;
   time_t since;               /* last connect/disconnect */
   unsigned int connects;
@@ -62,6 +63,13 @@ struct vmflow_mqtt_state_s
   unsigned int tx;
   unsigned int late_acks;
   enum MQTTErrors last_error;
+  bool restart;
+};
+
+struct rpc_slot_s
+{
+  size_t len;
+  char msg[RPC_MAXLEN + 1];
 };
 
 /****************************************************************************
@@ -71,14 +79,23 @@ struct vmflow_mqtt_state_s
 static struct vmflow_mqtt_state_s g_mqtt;
 static struct mqtt_client g_client;
 
-/* Guards g_client against "vmflow mqtt pub" while the client task swaps
- * the socket on reconnect.
+/* Guards g_client and g_sub against the other vmflow threads (and
+ * "vmflow pub") while the client swaps the socket on reconnect.
  */
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 
+static char g_sub[VMFLOW_SUB_LEN];
+static char g_key[VMFLOW_KEY_LEN];
+
 static uint8_t g_sendbuf[CONFIG_VMFLOW_MQTT_SENDBUF];
 static uint8_t g_recvbuf[CONFIG_VMFLOW_MQTT_RECVBUF];
+
+/* RPC messages copied by the callback, handled after mqtt_sync() */
+
+static struct rpc_slot_s g_rpc[RPC_SLOTS];
+static unsigned int g_rpc_head;
+static unsigned int g_rpc_tail;
 
 /****************************************************************************
  * Private Functions
@@ -92,26 +109,43 @@ static time_t uptime(void)
   return ts.tv_sec;
 }
 
-static bool task_alive(pid_t pid)
-{
-  return pid > 0 && kill(pid, 0) == 0;
-}
-
 static void status_topic(FAR char *topic, size_t len)
 {
-  snprintf(topic, len, "domain." MQTT_DOMAIN "/%s/status",
-           CONFIG_VMFLOW_SUBDOMAIN);
+  snprintf(topic, len, "domain." VMFLOW_DOMAIN "/%s/status", g_sub);
 }
 
 static void publish_callback(FAR void **state,
                              FAR struct mqtt_response_publish *publish)
 {
+  FAR const char *topic = publish->topic_name;
+  size_t tlen = publish->topic_name_size;
+  FAR struct rpc_slot_s *slot;
+  size_t len;
+
   g_mqtt.rx++;
-  syslog(LOG_INFO, "mqtt: rx %.*s (%zu bytes): %.*s\n",
-         publish->topic_name_size, (FAR const char *)publish->topic_name,
-         publish->application_message_size,
-         (int)publish->application_message_size,
-         (FAR const char *)publish->application_message);
+
+  if (tlen < 4 || memcmp(topic + tlen - 4, "/rpc", 4) != 0)
+    {
+      return;
+    }
+
+  if (g_rpc_head - g_rpc_tail == RPC_SLOTS)
+    {
+      syslog(LOG_WARNING, "mqtt: rpc dropped, %d pending\n", RPC_SLOTS);
+      return;
+    }
+
+  len = publish->application_message_size;
+  if (len > RPC_MAXLEN)
+    {
+      len = RPC_MAXLEN;
+    }
+
+  slot = &g_rpc[g_rpc_head % RPC_SLOTS];
+  memcpy(slot->msg, publish->application_message, len);
+  slot->msg[len] = '\0';
+  slot->len = len;
+  g_rpc_head++;
 }
 
 /* Resolve the broker and open a TCP connection. The socket is switched to
@@ -172,15 +206,14 @@ static int broker_open(void)
 
 static int session_start(int fd)
 {
-  char client_id[MQTT_TOPIC_LEN];
-  char topic[MQTT_TOPIC_LEN];
+  char client_id[VMFLOW_TOPIC_LEN];
+  char topic[VMFLOW_TOPIC_LEN];
   enum MQTTErrors err;
 
-  snprintf(client_id, sizeof(client_id), "vmflow-%s",
-           CONFIG_VMFLOW_SUBDOMAIN);
+  pthread_mutex_lock(&g_lock);
+  snprintf(client_id, sizeof(client_id), "vmflow-%s", g_sub);
   status_topic(topic, sizeof(topic));
 
-  pthread_mutex_lock(&g_lock);
   mqtt_init(&g_client, fd, g_sendbuf, sizeof(g_sendbuf),
             g_recvbuf, sizeof(g_recvbuf), publish_callback);
   err = mqtt_connect(&g_client, client_id, topic, "offline", 7,
@@ -206,23 +239,35 @@ static int session_start(int fd)
 
 static void session_connected(void)
 {
-  char topic[MQTT_TOPIC_LEN];
+  char topic[VMFLOW_TOPIC_LEN];
 
   pthread_mutex_lock(&g_lock);
   status_topic(topic, sizeof(topic));
   mqtt_publish(&g_client, topic, "online", 6,
                MQTT_PUBLISH_QOS_1 | MQTT_PUBLISH_RETAIN);
 
-  snprintf(topic, sizeof(topic), "%s." MQTT_DOMAIN "/#",
-           CONFIG_VMFLOW_SUBDOMAIN);
+  snprintf(topic, sizeof(topic), "%s." VMFLOW_DOMAIN "/#", g_sub);
   mqtt_subscribe(&g_client, topic, 0);
   g_mqtt.connected = true;
   pthread_mutex_unlock(&g_lock);
 
   g_mqtt.connects++;
   g_mqtt.since = uptime();
+  vmflow_led_update();
   syslog(LOG_INFO, "mqtt: connected to %s, subscribed %s\n",
          CONFIG_VMFLOW_MQTT_HOST, topic);
+}
+
+static void handle_rpcs(void)
+{
+  FAR struct rpc_slot_s *slot;
+
+  while (g_rpc_tail != g_rpc_head)
+    {
+      slot = &g_rpc[g_rpc_tail % RPC_SLOTS];
+      vmflow_rpc(slot->msg, slot->len);
+      g_rpc_tail++;
+    }
 }
 
 /* Run MQTT-C until the connection fails. */
@@ -230,6 +275,7 @@ static void session_connected(void)
 static void session_run(void)
 {
   enum MQTTErrors err;
+  time_t restart_at = 0;
 
   for (; ; )
     {
@@ -263,6 +309,20 @@ static void session_run(void)
           session_connected();
         }
 
+      handle_rpcs();
+
+      if (g_mqtt.restart)
+        {
+          if (restart_at == 0)
+            {
+              restart_at = uptime() + RESTART_DELAY_MS / 1000;
+            }
+          else if (uptime() >= restart_at)
+            {
+              boardctl(BOARDIOC_RESET, 0);
+            }
+        }
+
       usleep(MQTT_SYNC_MS * 1000);
     }
 }
@@ -271,20 +331,32 @@ static void session_run(void)
  * Public Functions
  ****************************************************************************/
 
-int vmflow_mqtt_run(int argc, FAR char *argv[])
+int vmflow_mqtt_run(void)
 {
+  char sub[VMFLOW_SUB_LEN];
+  char key[VMFLOW_KEY_LEN];
   int fd;
 
-  g_mqtt.pid   = getpid();
   g_mqtt.since = uptime();
-
-  syslog(LOG_INFO, "mqtt: device %s, broker %s:%d\n",
-         CONFIG_VMFLOW_SUBDOMAIN, CONFIG_VMFLOW_MQTT_HOST,
-         CONFIG_VMFLOW_MQTT_PORT);
 
   for (; ; )
     {
       bool was_connected = false;
+
+      /* Identity first: without it there is no topic to use. Read again
+       * on every attempt, so provisioning needs no restart.
+       */
+
+      if (!vmflow_identity(sub, key))
+        {
+          sleep(CONFIG_VMFLOW_MQTT_RECONNECT);
+          continue;
+        }
+
+      pthread_mutex_lock(&g_lock);
+      strcpy(g_sub, sub);
+      strcpy(g_key, key);
+      pthread_mutex_unlock(&g_lock);
 
       fd = broker_open();
       if (fd >= 0)
@@ -304,6 +376,7 @@ int vmflow_mqtt_run(int argc, FAR char *argv[])
 
           close(fd);
           pthread_mutex_unlock(&g_lock);
+          vmflow_led_update();
         }
 
       if (!was_connected)
@@ -317,31 +390,9 @@ int vmflow_mqtt_run(int argc, FAR char *argv[])
   return 0;
 }
 
-int vmflow_mqtt_start(void)
+bool vmflow_mqtt_connected(void)
 {
-  pid_t pid;
-
-  if (task_alive(g_mqtt.pid))
-    {
-      printf("mqtt: already running (pid %d)\n", g_mqtt.pid);
-      return OK;
-    }
-
-  pid = task_create("vmflow_mqtt", CONFIG_VMFLOW_PRIORITY,
-                    CONFIG_VMFLOW_MQTT_STACKSIZE, vmflow_mqtt_run, NULL);
-  if (pid < 0)
-    {
-      printf("mqtt: failed to start: %d\n", errno);
-      return -errno;
-    }
-
-  printf("mqtt: started (pid %d)\n", pid);
-  return OK;
-}
-
-bool vmflow_mqtt_running(void)
-{
-  return task_alive(g_mqtt.pid);
+  return g_mqtt.connected;
 }
 
 int vmflow_mqtt_publish(FAR const char *topic, FAR const void *payload,
@@ -373,21 +424,35 @@ int vmflow_mqtt_publish(FAR const char *topic, FAR const void *payload,
   return OK;
 }
 
+/* "<msg>:<hmac>" on domain.vmflow.xyz/<subdomain>/<what>, QoS 1: how the
+ * ESP-IDF firmware reports sales and failed vends.
+ */
+
+int vmflow_publish_signed(FAR const char *what, FAR const char *msg)
+{
+  char topic[VMFLOW_TOPIC_LEN];
+  char line[160];
+
+  pthread_mutex_lock(&g_lock);
+  snprintf(topic, sizeof(topic), "domain." VMFLOW_DOMAIN "/%s/%s", g_sub,
+           what);
+  vmflow_sign(g_key, msg, line, sizeof(line));
+  pthread_mutex_unlock(&g_lock);
+
+  return vmflow_mqtt_publish(topic, line, strlen(line), 1, false);
+}
+
+void vmflow_mqtt_restart(void)
+{
+  g_mqtt.restart = true;
+}
+
 void vmflow_mqtt_status(void)
 {
-  if (!task_alive(g_mqtt.pid))
-    {
-      printf("mqtt: not running\n");
-      return;
-    }
-
-  printf("client  : pid %d, device %s\n", g_mqtt.pid,
-         CONFIG_VMFLOW_SUBDOMAIN);
-  printf("broker  : %s:%d, keepalive %d s\n", CONFIG_VMFLOW_MQTT_HOST,
-         CONFIG_VMFLOW_MQTT_PORT, CONFIG_VMFLOW_MQTT_KEEPALIVE);
-  printf("state   : %s for %lld s\n",
+  printf("mqtt    : %s for %lld s, broker %s:%d\n",
          g_mqtt.connected ? "connected" : "disconnected",
-         (long long)(uptime() - g_mqtt.since));
+         (long long)(uptime() - g_mqtt.since), CONFIG_VMFLOW_MQTT_HOST,
+         CONFIG_VMFLOW_MQTT_PORT);
   printf("sessions: %u, failed attempts: %u\n",
          g_mqtt.connects, g_mqtt.failures);
   printf("messages: rx %u, tx %u, late acks %u\n", g_mqtt.rx, g_mqtt.tx,
