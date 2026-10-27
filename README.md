@@ -455,6 +455,17 @@ unacknowledged after 30 s, so both acks may come back; the second one matches no
 reports `MQTT_ERROR_ACK_OF_UNKNOWN`, which would end the session. The client drops that error and
 counts it as `late acks`.
 
+For a throwaway session from the shell, NuttX's MQTT-C examples are in the image. They open their
+own connection (no last will, no reconnect), and NSH cuts lines at 64 characters:
+
+```
+nsh> mqttc_pub -h mqtt.vmflow.xyz -t domain.vmflow.xyz/<sub>/t -m hi -q 1
+nsh> mqttc_sub -h mqtt.vmflow.xyz -t domain.vmflow.xyz/<sub>/#
+```
+
+`mqttc_sub` reads stdin and exits on `q`. The broker ACL only lets anonymous clients use `+/rpc`,
+`+/credit` and `domain.vmflow.xyz/#`.
+
 ### RPC
 
 Signed commands on `<subdomain>.vmflow.xyz/rpc`, same wire format as the ESP-IDF firmware
